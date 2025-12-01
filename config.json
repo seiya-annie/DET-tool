@@ -1,0 +1,95 @@
+{
+  "models": [
+    {
+      "name": "Skew",
+      "description": "Model A: 数据倾斜",
+      "type": "skew",
+      "params": {
+        "rows": 10000,
+        "ndv": 1000,
+        "skew_weights": [0.7, 0.2, 0.05],
+        "int_range": [1, 10000],
+        "date_range": ["2024-01-01", "2024-12-31"],
+        "varchar_range": {"prefix": "user_", "suffix_range": [1, 10000]}
+      },
+      "incremental": {
+        "insert_rows": 1000,
+        "update_ratio": 0.2,
+        "delete_ratio": 0.05,
+        "skew_weights": [0.1, 0.1, 0.1],
+        "int_range": [10001,11000],
+        "date_range": ["2025-01-01", "2025-12-31"],
+        "varchar_range": {"prefix": "user_", "suffix_range": [10001, 11000]}
+      }
+    },
+    {
+      "name": "Holes",
+      "description": "Model B: 数据空洞",
+      "type": "holes",
+      "params": {
+        "rows": 10000,
+        "int_range": [1, 12000],
+        "date_range": ["2024-01-01", "2024-12-31"],
+        "varchar_range": {"prefix": "log_", "suffix_range": [1, 12000]},
+        "int_hole_range": [4000, 6000]
+      },
+      "incremental": {
+        "insert_rows": 1000,
+        "update_ratio": 0.1,
+        "delete_ratio": 0.1,
+        "int_range": [12001, 13000],
+        "date_range": ["2025-01-01", "2025-12-31"],
+        "varchar_range": {"prefix": "log_", "suffix_range": [12001, 13000]},
+        "int_hole_range": [4000, 6000]
+      }
+    },
+    {
+      "name": "LowCard",
+      "description": "Model C: 低基数",
+      "type": "low_card",
+      "params": {
+        "rows": 10000,
+        "ndv": 5,
+        "int_range": [0, 100],
+        "date_range": ["2023-01-01", "2023-12-31"],
+        "varchar_range": {"options": ["Active", "Inactive", "Pending", "Deleted", "Archived"]}
+      },
+      "incremental": {
+        "insert_rows": 2000,
+        "update_ratio": 0.2,
+        "delete_ratio": 0.05,
+        "int_range": [50, 150],
+        "date_range": ["2023-06-01", "2024-06-30"],
+        "varchar_range": {"options": ["Active", "Inactive", "Pending", "Deleted", "Archived"]}
+      }
+    },
+    {
+      "name": "TPCC",
+      "description": "Model D: TPCC Order表",
+      "type": "tpcc",
+      "params": {
+        "rows": 10000,
+        "table_name": "Order"
+      },
+      "incremental": {
+        "insert_rows": 1000,
+        "update_ratio": 0.3,
+        "delete_ratio": 0.1
+      }
+    },
+    {
+      "name": "TPCH",
+      "description": "Model E: TPCH LineItem表",
+      "type": "tpch",
+      "params": {
+        "rows": 10000,
+        "table_name": "LineItem"
+      },
+      "incremental": {
+        "insert_rows": 1000,
+        "update_ratio": 0.3,
+        "delete_ratio": 0.1
+      }
+    }
+  ]
+}
