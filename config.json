@@ -64,31 +64,29 @@
       }
     },
     {
-      "name": "TPCC",
-      "description": "Model D: TPCC Order表",
-      "type": "tpcc",
+      "name": "TPCC_Bench",
+      "type": "external_tpcc",
+      "description": "调用 tiup bench tpcc",
       "params": {
-        "rows": 10000,
-        "table_name": "Order"
+        "warehouses": 4,
+        "threads": 4,
+        "time": "1m"
       },
       "incremental": {
-        "insert_rows": 1000,
-        "update_ratio": 0.3,
-        "delete_ratio": 0.1
+        "//_comment": "TPCC 的增量通常就是运行压测过程",
+        "action": "run"
       }
     },
     {
-      "name": "TPCH",
-      "description": "Model E: TPCH LineItem表",
-      "type": "tpch",
+      "name": "TPCH_Bench",
+      "type": "external_tpch",
+      "description": "调用 tiup bench tpch",
       "params": {
-        "rows": 10000,
-        "table_name": "LineItem"
+        "scale_factor": 1
       },
       "incremental": {
-        "insert_rows": 1000,
-        "update_ratio": 0.3,
-        "delete_ratio": 0.1
+        "action": "run_queries",
+        "queries": ["q1", "q6", "q12"]
       }
     }
   ]

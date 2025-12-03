@@ -1,0 +1,8 @@
+{
+  "host": "127.0.0.1",
+  "port": 59005,
+  "user": "root",
+  "password": "",
+  "db_name": "esti_test_db",
+  "charset": "utf8mb4"
+}
