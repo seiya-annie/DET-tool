@@ -55,10 +55,8 @@ class ExternalBenchRunner:
             cmd.extend(["--warehouses", str(params.get('warehouses', 1))])
         elif tool_name == 'tpch':
             cmd.extend(["--sf", str(params.get('scale_factor', 1))])
-
         if 'extra_args' in params:
             cmd.extend(params['extra_args'].split())
-
         self._run_subprocess(cmd)
 
     def run_workload(self, model_config):
@@ -111,7 +109,7 @@ class DBManager:
                 password=self.cfg.get('password', ''),
                 database=None,
                 charset=self.cfg['charset'],
-                local_infile=True,  # 必须开启
+                local_infile=True,
                 autocommit=True
             )
             print(f">>> Connected to Database: {self.cfg['host']}:{self.cfg['port']}")
@@ -143,7 +141,6 @@ class DBManager:
             cols.append(f"`{col_name}` {sql_type}")
 
         indexes = [f"KEY `idx_{col}` (`{col}`)" for col in df_preview.columns]
-
         ddl = f"""
         CREATE TABLE IF NOT EXISTS `{table_name}` (
             {", ".join(cols)},
@@ -156,11 +153,7 @@ class DBManager:
         print(f"    [DB] Table created: {table_name}")
 
     def load_data_infile(self, table_name, csv_path):
-        # [修复点] 1. 使用 replace 确保路径分隔符兼容
-        # [修复点] 2. 使用单行 f-string 消除换行符和缩进干扰
-        # [修复点] 3. 将 ROWS 改为 LINES (更标准)
         abs_path = os.path.abspath(csv_path).replace('\\', '/')
-
         sql = (
             f"LOAD DATA LOCAL INFILE '{abs_path}' "
             f"INTO TABLE `{table_name}` "
@@ -169,7 +162,6 @@ class DBManager:
             f"LINES TERMINATED BY '\\n' "
             f"IGNORE 1 LINES;"
         )
-
         try:
             with self.conn.cursor() as cursor:
                 cursor.execute(sql)
@@ -182,10 +174,8 @@ class DBManager:
         if not os.path.exists(sql_path):
             print("      File not found, skipping.")
             return
-
         with open(sql_path, 'r', encoding='utf-8') as f:
             statements = f.read().split(';')
-
         with self.conn.cursor() as cursor:
             for sql in statements:
                 if sql.strip():
@@ -195,30 +185,24 @@ class DBManager:
                         print(f"      SQL Error: {e} | SQL: {sql[:50]}...")
 
     def execute_and_explain(self, query_file):
-        if not os.path.exists(query_file):
-            return []
-
-        print(f"    [DB] Running Analysis on queries: {query_file}")
+        if not os.path.exists(query_file): return []
         with open(query_file, 'r', encoding='utf-8') as f:
             content = f.read()
             queries = [q.strip() for q in content.split(';') if q.strip()]
-
         results = []
         with self.conn.cursor() as cursor:
             for i, sql in enumerate(queries):
                 if sql.startswith('--'): continue
-
                 start_ts = time.time()
                 try:
                     cursor.execute(sql)
                     cursor.fetchall()
                     duration = (time.time() - start_ts) * 1000
-
                     cursor.execute(f"EXPLAIN {sql}")
-                    explain_res = cursor.fetchall()
-                    explain_str = str(explain_res[0]) if explain_res else "No Plan"
-
+                    explain_rows = cursor.fetchall()
+                    explain_str = "\n".join([str(row) for row in explain_rows]) if explain_rows else "No Plan"
                     results.append({
+                        "query_id": i + 1,
                         "query": sql,
                         "duration_ms": duration,
                         "explain": explain_str
@@ -226,6 +210,25 @@ class DBManager:
                 except Exception as e:
                     print(f"      Q{i + 1} Error: {e}")
         return results
+
+    def get_table_stats(self, table_name, columns):
+        """
+        [NEW] 实时查询数据库获取当前数据的 Min/Max 值
+        返回: {'col_name': {'min': val, 'max': val}, ...}
+        """
+        stats = {}
+        with self.conn.cursor() as cursor:
+            for col in columns:
+                try:
+                    # 使用聚合查询获取真实范围
+                    sql = f"SELECT MIN({col}), MAX({col}) FROM `{table_name}`"
+                    cursor.execute(sql)
+                    res = cursor.fetchone()
+                    if res:
+                        stats[col] = {'min': res[0], 'max': res[1]}
+                except Exception as e:
+                    print(f"      Warning: Could not fetch stats for {col}: {e}")
+        return stats
 
 
 # ==========================================
@@ -262,25 +265,52 @@ class SqlGenerator:
 
 
 class QueryBuilder:
-    def generate(self, model_config, table_name, output_file):
+    def generate(self, model_config, table_name, output_file, current_stats=None):
+        """
+        自动构造测试查询语句
+        current_stats: 字典, 包含从数据库查询到的实时 {'col': {'min':x, 'max':y}}
+                       如果存在，优先使用实时数据构造 Out-of-range 查询
+        """
         sqls = []
         params = model_config['params']
         sqls.append(f"-- Auto-generated queries for {table_name}")
+        sqls.append(f"-- Timestamp: {datetime.now()}")
 
+        # 1. Int Column
         col_int = f"{model_config['name']}_int"
-        min_i, max_i = params.get('int_range', [0, 100])
+        # 优先使用实时统计的 Max 值，否则使用配置值
+        if current_stats and col_int in current_stats and current_stats[col_int]['max'] is not None:
+            max_i = current_stats[col_int]['max']
+            min_i = current_stats[col_int]['min']
+        else:
+            min_i, max_i = params.get('int_range', [0, 100])
+
+        # Query 1: Out of range (Max + 1000)
         sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} = {max_i + 1000}")
+        # Query 2: EQ (Min + 1)
         sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} = {min_i + 1}")
+        # Query 3: Range (Min to Min+50)
         sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} BETWEEN {min_i} AND {min_i + 50}")
 
+        # 2. Varchar Column
         col_str = f"{model_config['name']}_varchar"
         prefix = params.get('varchar_range', {}).get('prefix', 'user_')
+        # Query 4: EQ String
         sqls.append(f"SELECT * FROM {table_name} WHERE {col_str} = '{prefix}1'")
 
+        # 3. Datetime Column
         col_dt = f"{model_config['name']}_datetime"
-        d_start = params.get('date_range', ["2024-01-01"])[0]
+        if current_stats and col_dt in current_stats and current_stats[col_dt]['max'] is not None:
+            # 使用真实最大时间
+            d_start = current_stats[col_dt]['max']
+        else:
+            d_start = params.get('date_range', ["2024-01-01"])[0]
+
+        # Query 5: Range Date
         sqls.append(f"SELECT * FROM {table_name} WHERE {col_dt} > '{d_start}'")
 
+        # 4. Complex
+        # Query 6: CNF
         sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} > {min_i} AND {col_str} LIKE '{prefix}%'")
 
         with open(output_file, 'w', encoding='utf-8') as f:
@@ -450,30 +480,42 @@ def main():
             df = rename_columns(df, name)
 
             csv_file = f"dataset_{name}_base.csv"
-            # [修复点] 强制使用 \n 作为换行符，避免 Windows 下产生 \r\n 导致 Load Data 出错
             df.to_csv(csv_file, index=False, lineterminator='\n')
 
             db.create_table(name, df)
             db.load_data_infile(name, csv_file)
 
-    # === Step 2: Query Generation ===
+    # === Step 2: Query Generation & Execution (Base Stats) ===
     print("\n" + "=" * 50)
     print(" STEP 2: Initial Query Execution")
     print("=" * 50)
 
-    query_files = {}
+    query_files_base = {}
     baseline_stats = {}
+    all_baseline_data = []
 
     for model in model_config_list:
         if model['type'] in INTERNAL_MODELS:
             name = model['name']
-            q_file = f"queries_{name}.sql"
-            q_builder.generate(model, name, q_file)
-            query_files[name] = q_file
+
+            # [NEW] 获取实时统计信息，用于生成更准确的初始查询
+            print(f"  Fetching stats for {name}...")
+            cols_to_stat = [f"{name}_int", f"{name}_datetime"]
+            curr_stats = db.get_table_stats(name, cols_to_stat)
+
+            q_file = f"queries_{name}_step2.sql"
+            q_builder.generate(model, name, q_file, current_stats=curr_stats)
+            query_files_base[name] = q_file
 
             print(f"  Executing queries for {name}...")
             stats = db.execute_and_explain(q_file)
+            for s in stats: s['Model'] = name
             baseline_stats[name] = stats
+            all_baseline_data.extend(stats)
+
+    if all_baseline_data:
+        pd.DataFrame(all_baseline_data).to_csv("report_step2_baseline.csv", index=False)
+        print("  -> Saved baseline report to report_step2_baseline.csv")
 
     # === Step 3: Incremental Changes ===
     print("\n" + "=" * 50)
@@ -508,36 +550,62 @@ def main():
     else:
         print("No internal incremental SQL generated.")
 
-    # === Step 4: Regression Testing ===
+    # === Step 4: Regression Testing (RE-GENERATE & Re-execute Queries) ===
     print("\n" + "=" * 50)
-    print(" STEP 4: Regression Testing (Re-execute Queries)")
+    print(" STEP 4: Regression Testing (Re-gen & Re-execute)")
     print("=" * 50)
 
     comparison_report = []
+    all_regression_data = []
 
-    for name, q_file in query_files.items():
-        print(f"  Re-executing queries for {name}...")
-        new_stats = db.execute_and_explain(q_file)
+    for model in model_config_list:
+        if model['type'] in INTERNAL_MODELS:
+            name = model['name']
 
-        old_list = baseline_stats.get(name, [])
-        for i, new_res in enumerate(new_stats):
-            if i < len(old_list):
-                old_res = old_list[i]
-                diff = new_res['duration_ms'] - old_res['duration_ms']
-                plan_changed = (new_res['explain'] != old_res['explain'])
+            # [NEW] 1. 获取增量更新后的实时统计信息
+            print(f"  Fetching NEW stats for {name}...")
+            cols_to_stat = [f"{name}_int", f"{name}_datetime"]
+            new_stats = db.get_table_stats(name, cols_to_stat)
 
-                comparison_report.append({
-                    "Model": name,
-                    "Query": new_res['query'][:30] + "...",
-                    "Old_Time": f"{old_res['duration_ms']:.2f}ms",
-                    "New_Time": f"{new_res['duration_ms']:.2f}ms",
-                    "Diff": f"{diff:+.2f}ms",
-                    "Plan_Changed": "YES" if plan_changed else "NO"
-                })
+            # [NEW] 2. 重新生成查询 (基于新数据分布，例如 Max 值变大)
+            q_file_step4 = f"queries_{name}_step4.sql"
+            q_builder.generate(model, name, q_file_step4, current_stats=new_stats)
+            print(f"  Generated updated queries: {q_file_step4}")
+
+            # 3. 执行新查询
+            new_exec_stats = db.execute_and_explain(q_file_step4)
+            for s in new_exec_stats: s['Model'] = name
+            all_regression_data.extend(new_exec_stats)
+
+            # 4. 对比 (对比的是 Scenario ID，即第i个查询 vs 第i个查询)
+            old_list = baseline_stats.get(name, [])
+            for i, new_res in enumerate(new_exec_stats):
+                if i < len(old_list):
+                    old_res = old_list[i]
+                    diff = new_res['duration_ms'] - old_res['duration_ms']
+                    plan_changed = (new_res['explain'] != old_res['explain'])
+
+                    comparison_report.append({
+                        "Model": name,
+                        "Query_ID": new_res['query_id'],
+                        "Step2_SQL": old_res['query'][:30] + "...",
+                        "Step4_SQL": new_res['query'][:30] + "...",
+                        "Old_Time_ms": f"{old_res['duration_ms']:.2f}",
+                        "New_Time_ms": f"{new_res['duration_ms']:.2f}",
+                        "Diff_ms": f"{diff:+.2f}",
+                        "Plan_Changed": "YES" if plan_changed else "NO"
+                    })
+
+    if all_regression_data:
+        pd.DataFrame(all_regression_data).to_csv("report_step4_regression.csv", index=False)
+        print("  -> Saved regression report to report_step4_regression.csv")
 
     print("\n=== Final Comparison Report ===")
     if comparison_report:
-        print(pd.DataFrame(comparison_report).to_string())
+        df_comp = pd.DataFrame(comparison_report)
+        print(df_comp[['Model', 'Query_ID', 'Step4_SQL', 'Diff_ms', 'Plan_Changed']].to_string())
+        df_comp.to_csv("report_final_comparison.csv", index=False)
+        print("  -> Saved comparison report to report_final_comparison.csv")
     else:
         print("No queries tracked for comparison.")
 
