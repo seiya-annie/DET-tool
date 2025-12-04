@@ -17,7 +17,7 @@
         "update_ratio": 0.2,
         "delete_ratio": 0.05,
         "skew_weights": [0.1, 0.1, 0.1],
-        "int_range": [10001,11000],
+        "int_range": [10001,14000],
         "date_range": ["2025-01-01", "2025-12-31"],
         "varchar_range": {"prefix": "user_", "suffix_range": [10001, 11000]}
       }
@@ -31,7 +31,8 @@
         "int_range": [1, 12000],
         "date_range": ["2024-01-01", "2024-12-31"],
         "varchar_range": {"prefix": "log_", "suffix_range": [1, 12000]},
-        "int_hole_range": [4000, 6000]
+        "int_hole_range": [4000, 6000],
+        "date_hole_range": ["2024-03-01", "2024-4-30"]
       },
       "incremental": {
         "insert_rows": 1000,
