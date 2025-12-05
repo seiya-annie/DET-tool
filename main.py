@@ -441,7 +441,7 @@ def generate_html_report(df_report, html_filename, columns, config_data=None):
         .high-error {{ background-color: #ffebee !important; color: #c62828; font-weight: bold; }}
         .query-cell {{ max-width: 300px; word-wrap: break-word; font-family: 'Courier New', monospace; font-size: 11px; }}
         .explain-cell {{ max-width: 400px; word-wrap: break-word; font-family: 'Courier New', monospace; font-size: 10px; color: #666; white-space: pre-wrap; }}
-        .numeric-cell {{ text-align: right; font-family: 'Courier New', monospace; }}
+        .numeric-cell {{ text-align: left; font-family: 'Courier New', monospace; }}
         .stats {{ display: flex; justify-content: space-around; margin-bottom: 20px; }}
         .stat-box {{ background-color: #f8f9fa; padding: 15px; border-radius: 5px; text-align: center; min-width: 120px; }}
         .stat-value {{ font-size: 24px; font-weight: bold; color: #4CAF50; }}
