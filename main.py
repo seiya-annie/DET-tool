@@ -788,6 +788,7 @@ def parse_arguments():
                         help="Step 3: Generate SQL Queries (based on current DB stats)")
     parser.add_argument('--exec-query', action='store_true', help="Step 4: Execute SQL Queries & Report")
     parser.add_argument('--sql-file', type=str, default='incremental_dml.sql', help="File for incremental DML")
+    parser.add_argument('--config', type=str, default='config.json', help="Configuration file for models")
     return parser.parse_args()
 
 
@@ -803,7 +804,7 @@ def main():
     try:
         with open('db_config.json', 'r') as f:
             db_conf = json.load(f)
-        with open('config.json', 'r') as f:
+        with open(args.config, 'r') as f:
             models = json.load(f)['models']
     except Exception as e:
         return print(f"Config Error: {e}")
