@@ -1,2 +1,84 @@
-*.csv
-config_test.json
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# Build directories
+build/
+dist/
+bin/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Configuration files (sensitive)
+config.json
+db_config.json
+!config.json.example
+!db_config.json.example
+
+# Log files
+*.log
+
+# Data files
+dataset_*.csv
+queries_*.sql
+incremental_dml.sql
+
+# Report files
+report_*.csv
+report_*.html
+report_*.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Coverage files
+coverage.out
+coverage.html
+
+# Local environment files
+.env
+.env.local
+
+# Database files
+*.db
+*.sqlite
+
+# Backup files
+*.bak
+*.backup
+
+# Package files
+*.tar.gz
+*.zip
+
+# Docker volumes
+docker-volumes/
+
+# Generated documentation
+docs/generated/

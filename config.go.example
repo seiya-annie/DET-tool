@@ -1,0 +1,301 @@
+package main
+
+// Example configuration structures and default values
+
+// DefaultConfig returns a default configuration for testing
+func DefaultConfig() *Config {
+	return &Config{
+		Models: []ModelConfig{
+			{
+				Name:        "SkewExample",
+				Description: "Example skewed data model",
+				Type:        "skew",
+				Params: map[string]interface{}{
+					"rows":         5000,
+					"ndv":          500,
+					"skew_weights": []float64{0.8, 0.15, 0.05},
+					"int_range":    []int{1, 5000},
+					"date_range":   []string{"2024-01-01", "2024-12-31"},
+					"varchar_range": map[string]interface{}{
+						"prefix":       "user_",
+						"suffix_range": []int{1, 5000},
+					},
+				},
+				Incremental: map[string]interface{}{
+					"insert_rows": 500,
+					"update_ratio":  0.1,
+					"delete_ratio":  0.05,
+				},
+			},
+			{
+				Name:        "HolesExample",
+				Description: "Example data holes model",
+				Type:        "holes",
+				Params: map[string]interface{}{
+					"rows":         3000,
+					"int_range":    []int{1, 4000},
+					"date_range":   []string{"2024-01-01", "2024-12-31"},
+					"varchar_range": map[string]interface{}{
+						"prefix":       "log_",
+						"suffix_range": []int{1, 4000},
+					},
+					"int_hole_range":  []int{1500, 2500},
+					"date_hole_range": []string{"2024-04-01", "2024-06-30"},
+				},
+				Incremental: map[string]interface{}{
+					"insert_rows": 300,
+					"update_ratio":  0.15,
+					"delete_ratio":  0.1,
+				},
+			},
+			{
+				Name:        "LowCardExample",
+				Description: "Example low cardinality model",
+				Type:        "low_card",
+				Params: map[string]interface{}{
+					"rows":       2000,
+					"ndv":        5,
+					"int_range":  []int{0, 100},
+					"date_range": []string{"2023-01-01", "2023-12-31"},
+					"varchar_range": map[string]interface{}{
+						"options": []string{"Active", "Inactive", "Pending", "Deleted", "Archived"},
+					},
+				},
+				Incremental: map[string]interface{}{
+					"insert_rows": 200,
+					"update_ratio":  0.2,
+					"delete_ratio":  0.05,
+				},
+			},
+		},
+	}
+}
+
+// DefaultDBConfig returns a default database configuration
+func DefaultDBConfig() *DBConfig {
+	return &DBConfig{
+		Host:     "127.0.0.1",
+		Port:     4000,
+		User:     "root",
+		Password: "",
+		DBName:   "det_test_db",
+		Charset:  "utf8mb4",
+	}
+}
+
+// ExampleModelConfigs provides example model configurations
+var ExampleModelConfigs = map[string]ModelConfig{
+	"small_skew": {
+		Name:        "SmallSkew",
+		Description: "Small skewed dataset for testing",
+		Type:        "skew",
+		Params: map[string]interface{}{
+			"rows":         1000,
+			"ndv":          100,
+			"skew_weights": []float64{0.7, 0.2, 0.1},
+			"int_range":    []int{1, 1000},
+			"date_range":   []string{"2024-01-01", "2024-06-30"},
+			"varchar_range": map[string]interface{}{
+				"prefix":       "test_",
+				"suffix_range": []int{1, 1000},
+			},
+		},
+		Incremental: map[string]interface{}{
+			"insert_rows": 100,
+			"update_ratio":  0.1,
+			"delete_ratio":  0.05,
+		},
+	},
+	"medium_holes": {
+		Name:        "MediumHoles",
+		Description: "Medium dataset with holes",
+		Type:        "holes",
+		Params: map[string]interface{}{
+			"rows":         5000,
+			"int_range":    []int{1, 6000},
+			"date_range":   []string{"2024-01-01", "2024-12-31"},
+			"varchar_range": map[string]interface{}{
+				"prefix":       "data_",
+				"suffix_range": []int{1, 6000},
+			},
+			"int_hole_range":  []int{2000, 3000},
+			"date_hole_range": []string{"2024-03-01", "2024-05-31"},
+		},
+		Incremental: map[string]interface{}{
+			"insert_rows": 500,
+			"update_ratio":  0.15,
+			"delete_ratio":  0.08,
+		},
+	},
+	"large_lowcard": {
+		Name:        "LargeLowCard",
+		Description: "Large dataset with low cardinality",
+		Type:        "low_card",
+		Params: map[string]interface{}{
+			"rows":       10000,
+			"ndv":        10,
+			"int_range":  []int{0, 1000},
+			"date_range": []string{"2023-01-01", "2024-12-31"},
+			"varchar_range": map[string]interface{}{
+				"options": []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"},
+			},
+		},
+		Incremental: map[string]interface{}{
+			"insert_rows": 1000,
+			"update_ratio":  0.25,
+			"delete_ratio":  0.1,
+		},
+	},
+}
+
+// Validation functions
+
+// ValidateConfig validates the configuration
+func ValidateConfig(config *Config) error {
+	if config == nil {
+		return fmt.Errorf("configuration is nil")
+	}
+	
+	if len(config.Models) == 0 {
+		return fmt.Errorf("no models defined in configuration")
+	}
+	
+	for i, model := range config.Models {
+		if err := ValidateModelConfig(model); err != nil {
+			return fmt.Errorf("model %d (%s): %v", i, model.Name, err)
+		}
+	}
+	
+	return nil
+}
+
+// ValidateModelConfig validates a single model configuration
+func ValidateModelConfig(model ModelConfig) error {
+	if model.Name == "" {
+		return fmt.Errorf("model name is required")
+	}
+	
+	if model.Type == "" {
+		return fmt.Errorf("model type is required")
+	}
+	
+	validTypes := []string{"skew", "holes", "low_card", "external_tpcc", "external_tpch"}
+	isValidType := false
+	for _, valid := range validTypes {
+		if model.Type == valid {
+			isValidType = true
+			break
+		}
+	}
+	
+	if !isValidType {
+		return fmt.Errorf("invalid model type '%s', valid types are: %v", model.Type, validTypes)
+	}
+	
+	if model.Params == nil {
+		return fmt.Errorf("model params are required")
+	}
+	
+	// Validate specific model types
+	switch model.Type {
+	case "skew":
+		if _, ok := model.Params["rows"]; !ok {
+			return fmt.Errorf("skew model requires 'rows' parameter")
+		}
+	case "holes":
+		if _, ok := model.Params["rows"]; !ok {
+			return fmt.Errorf("holes model requires 'rows' parameter")
+		}
+	case "low_card":
+		if _, ok := model.Params["rows"]; !ok {
+			return fmt.Errorf("low_card model requires 'rows' parameter")
+		}
+	case "external_tpcc":
+		if _, ok := model.Params["warehouses"]; !ok {
+			return fmt.Errorf("tpcc model requires 'warehouses' parameter")
+		}
+	case "external_tpch":
+		if _, ok := model.Params["scale_factor"]; !ok {
+			return fmt.Errorf("tpch model requires 'scale_factor' parameter")
+		}
+	}
+	
+	return nil
+}
+
+// ValidateDBConfig validates database configuration
+func ValidateDBConfig(config *DBConfig) error {
+	if config == nil {
+		return fmt.Errorf("database configuration is nil")
+	}
+	
+	if config.Host == "" {
+		return fmt.Errorf("database host is required")
+	}
+	
+	if config.Port <= 0 {
+		return fmt.Errorf("database port must be positive")
+	}
+	
+	if config.User == "" {
+		return fmt.Errorf("database user is required")
+	}
+	
+	if config.DBName == "" {
+		return fmt.Errorf("database name is required")
+	}
+	
+	if config.Charset == "" {
+		config.Charset = "utf8mb4"
+	}
+	
+	return nil
+}
+
+// Configuration helpers
+
+// GetModelByName finds a model by name in the configuration
+func GetModelByName(config *Config, name string) (*ModelConfig, error) {
+	for i := range config.Models {
+		if config.Models[i].Name == name {
+			return &config.Models[i], nil
+		}
+	}
+	return nil, fmt.Errorf("model '%s' not found in configuration", name)
+}
+
+// GetModelNames returns all model names in the configuration
+func GetModelNames(config *Config) []string {
+	names := make([]string, len(config.Models))
+	for i, model := range config.Models {
+		names[i] = model.Name
+	}
+	return names
+}
+
+// IsExternalModel checks if a model is an external benchmark
+func IsExternalModel(modelType string) bool {
+	return strings.HasPrefix(modelType, "external_")
+}
+
+// GetInternalModels returns only internal models from configuration
+func GetInternalModels(config *Config) []ModelConfig {
+	var internal []ModelConfig
+	for _, model := range config.Models {
+		if !IsExternalModel(model.Type) {
+			internal = append(internal, model)
+		}
+	}
+	return internal
+}
+
+// GetExternalModels returns only external models from configuration
+func GetExternalModels(config *Config) []ModelConfig {
+	var external []ModelConfig
+	for _, model := range config.Models {
+		if IsExternalModel(model.Type) {
+			external = append(external, model)
+		}
+	}
+	return external
+}
