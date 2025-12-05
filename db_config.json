@@ -1,6 +1,6 @@
 {
   "host": "127.0.0.1",
-  "port": 59005,
+  "port": 4000,
   "user": "root",
   "password": "",
   "db_name": "esti_test_db",
