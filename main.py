@@ -154,8 +154,10 @@ class DBManager:
                 sql_type = "VARCHAR(255)"
             cols.append(f"`{col_name}` {sql_type}")
         indexes = [f"KEY `idx_{col}` (`{col}`)" for col in df_preview.columns]
+        id_c = "`id` bigint NOT NULL AUTO_INCREMENT,"
+        pk = "PRIMARY KEY (`id`)"
         ddl = f"""CREATE TABLE IF NOT EXISTS `{table_name}` (
-            {", ".join(cols)}, {", ".join(indexes)}
+            {id_c}, {", ".join(cols)}, {", ".join(indexes)}, {pk}
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;"""
         with self.conn.cursor() as cursor:
             cursor.execute(f"DROP TABLE IF EXISTS `{table_name}`")
@@ -333,15 +335,12 @@ class DBManager:
                         act_match = re.search(r'(\d+\.?\d*)', act_rows_str)
 
                         if est_match and act_match:
-                            est_rows = float(est_match.group(1))
-                            act_rows = float(act_match.group(1))
+                            est_rows = max(float(est_match.group(1)),1)
+                            act_rows = max(float(act_match.group(1)),1)
                             original_act_rows = act_rows
 
-                            if act_rows == 0:
-                                act_rows = 1
-
-                            estimation_error_value = est_rows - original_act_rows
-                            estimation_error_ratio = est_rows / act_rows
+                            estimation_error_value = abs(est_rows - original_act_rows)
+                            estimation_error_ratio = max(act_rows, est_rows) / min(act_rows, est_rows)
 
                             is_risk = (estimation_error_ratio >= 10) and (estimation_error_value >= 1000)
 
@@ -579,25 +578,25 @@ class QueryBuilder:
         else:
             min_i, max_i = p.get('int_range', [0, 100])
 
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} = {max_i + 1000}")
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} = {min_i + 1}")
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} BETWEEN {min_i} AND {min_i + 50}")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_int} = {max_i + 1000}")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_int} = {min_i + 1}")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_int} BETWEEN {min_i} AND {min_i + 50}")
 
         if m_type == 'holes' and 'int_hole_range' in p:
             h_start, h_end = p['int_hole_range']
             sqls.append(f"-- [Int] Holes Specific Queries")
-            sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} > {h_start} AND {col_int} < {h_end}")
+            sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_int} > {h_start} AND {col_int} < {h_end}")
             offset = max(int((h_end - h_start) * 0.1), 500)
             cross_start = max(min_i, h_start - offset)
             cross_end = h_start + offset
-            sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} > {cross_start} AND {col_int} < {cross_end}")
+            sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_int} > {cross_start} AND {col_int} < {cross_end}")
 
         v_conf = p.get('varchar_range', {})
         prefix = v_conf.get('prefix', 'user_')
         s_min, s_max = v_conf.get('suffix_range', [1, 1000])
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_str} = '{prefix}{s_max + 1000}'")
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_str} = '{prefix}{s_min + 1}'")
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_str} BETWEEN '{prefix}{s_min}' AND '{prefix}{s_min + 50}'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_str} = '{prefix}{s_max + 1000}'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_str} = '{prefix}{s_min + 1}'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_str} BETWEEN '{prefix}{s_min}' AND '{prefix}{s_min + 50}'")
 
         d_range = p.get('date_range', ["2024-01-01", "2024-12-31"])
         if current_stats and col_dt in current_stats and current_stats[col_dt]['max'] is not None:
@@ -611,17 +610,17 @@ class QueryBuilder:
         except:
             dt_min = datetime.now()
 
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_dt} > '{real_max_val}'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_dt} > '{real_max_val}'")
         dt_eq = (dt_min + timedelta(days=1)).strftime("%Y-%m-%d")
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_dt} = '{dt_eq}'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_dt} = '{dt_eq}'")
         dt_range_end = (dt_min + timedelta(days=30)).strftime("%Y-%m-%d")
         dt_min_str_val = dt_min.strftime("%Y-%m-%d")
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_dt} BETWEEN '{dt_min_str_val}' AND '{dt_range_end}'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_dt} BETWEEN '{dt_min_str_val}' AND '{dt_range_end}'")
 
         if m_type == 'holes' and 'date_hole_range' in p:
             dh_start_str, dh_end_str = p['date_hole_range']
             sqls.append(f"-- [Datetime] Holes Specific Queries")
-            sqls.append(f"SELECT * FROM {table_name} WHERE {col_dt} > '{dh_start_str}' AND {col_dt} < '{dh_end_str}'")
+            sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_dt} > '{dh_start_str}' AND {col_dt} < '{dh_end_str}'")
             try:
                 dh_start = pd.to_datetime(dh_start_str)
                 dh_end = pd.to_datetime(dh_end_str)
@@ -629,11 +628,11 @@ class QueryBuilder:
                 offset = max(gap_delta * 0.1, timedelta(days=1))
                 cross_start = (dh_start - offset).strftime("%Y-%m-%d")
                 cross_end = (dh_start + offset).strftime("%Y-%m-%d")
-                sqls.append(f"SELECT * FROM {table_name} WHERE {col_dt} > '{cross_start}' AND {col_dt} < '{cross_end}'")
+                sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_dt} > '{cross_start}' AND {col_dt} < '{cross_end}'")
             except Exception as e:
                 sqls.append(f"-- Error generating datetime crossing query: {e}")
 
-        sqls.append(f"SELECT * FROM {table_name} WHERE {col_int} > {min_i} AND {col_str} LIKE '{prefix}%'")
+        sqls.append(f"SELECT 1 FROM {table_name} WHERE {col_int} > {min_i} AND {col_str} LIKE '{prefix}%'")
 
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(";\n".join(sqls))
