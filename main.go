@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	INTERNAL_MODELS       = "skew,holes,low_card"
-	EXTERNAL_MODELS       = "external_tpcc,external_tpch"
-	TARGET_QUERY_MODELS   = "skew,holes,low_card"
-	CONTROL_KEYS          = "insert_rows,update_ratio,delete_ratio"
+	INTERNAL_MODELS     = "skew,holes,low_card"
+	EXTERNAL_MODELS     = "external_tpcc,external_tpch"
+	TARGET_QUERY_MODELS = "skew,holes,low_card"
+	CONTROL_KEYS        = "insert_rows,update_ratio,delete_ratio"
 )
 
 type Config struct {
@@ -39,24 +39,24 @@ type DBConfig struct {
 }
 
 type QueryResult struct {
-	QueryID               int     `json:"query_id"`
-	Query                 string  `json:"query"`
-	DurationMs            float64 `json:"duration_ms"`
-	Explain               string  `json:"explain"`
-	EstimationErrorValue  float64 `json:"estimation_error_value"`
-	EstimationErrorRatio  float64 `json:"estimation_error_ratio"`
-	RiskOperatorsCount    int     `json:"risk_operators_count"`
-	Model                 string  `json:"model"`
+	QueryID              int     `json:"query_id"`
+	Query                string  `json:"query"`
+	DurationMs           float64 `json:"duration_ms"`
+	Explain              string  `json:"explain"`
+	EstimationErrorValue float64 `json:"estimation_error_value"`
+	EstimationErrorRatio float64 `json:"estimation_error_ratio"`
+	RiskOperatorsCount   int     `json:"risk_operators_count"`
+	Model                string  `json:"model"`
 }
 
 var (
-	all       bool
-	genBase   bool
-	genInc    bool
-	genQuery  bool
-	execQuery bool
-	sqlFile   string
-	configFile string
+	all          bool
+	genBase      bool
+	genInc       bool
+	genQuery     bool
+	execQuery    bool
+	sqlFile      string
+	configFile   string
 	dbConfigFile string
 )
 
@@ -92,6 +92,9 @@ func main() {
 	}
 
 	dbManager := NewDBManager(*dbConfig)
+	dbManager.InitDB()
+	dbManager.DisableAutoAnalyze()
+
 	externalRunner := NewExternalBenchRunner(*dbConfig)
 	dataGenerator := NewDataGenerator()
 	queryBuilder := NewQueryBuilder()
@@ -99,9 +102,6 @@ func main() {
 	// Step 1: Base Data Generation
 	if genBase {
 		fmt.Println("\n=== [Step 1] Base Data Generation ===")
-		dbManager.InitDB()
-		dbManager.DisableAutoAnalyze()
-
 		for _, model := range config.Models {
 			name := model.Name
 			if contains(EXTERNAL_MODELS, model.Type) {
@@ -169,7 +169,7 @@ func main() {
 				name := model.Name
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
 				stats := dbManager.GetTableStats(name, cols)
-				
+
 				outfile := fmt.Sprintf("queries_%s.sql", name)
 				queryBuilder.Generate(model, name, outfile, stats)
 				fmt.Printf("Generated %s based on DB stats: %v\n", outfile, stats)
@@ -180,7 +180,7 @@ func main() {
 	// Step 4: Execute Queries & Report
 	if execQuery {
 		fmt.Println("\n=== [Step 4] Execute Queries & Report ===")
-		
+
 		statsHealthyInfo := dbManager.GetStatsHealthy()
 		fmt.Printf("Stats healthy info: %v\n", statsHealthyInfo)
 
@@ -202,14 +202,14 @@ func main() {
 			ts := time.Now().Format("20060102_150405")
 			csvName := fmt.Sprintf("report_execution_%s.csv", ts)
 			htmlName := fmt.Sprintf("report_execution_%s.html", ts)
-			
+
 			if err := generateCSVReport(report, csvName, config); err != nil {
 				log.Printf("Error generating CSV report: %v", err)
 			}
 			if err := generateHTMLReport(report, htmlName, config); err != nil {
 				log.Printf("Error generating HTML report: %v", err)
 			}
-			
+
 			displayTopQueries(report)
 		} else {
 			fmt.Println("No queries executed or no results found.")
@@ -222,7 +222,7 @@ func loadConfig(filename string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
@@ -235,7 +235,7 @@ func loadDBConfig(filename string) (*DBConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var config DBConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
@@ -253,8 +253,6 @@ func contains(list string, item string) bool {
 	return false
 }
 
-
-
 func saveDataFrameToCSV(df *DataFrame, path string) error {
 	return df.SaveCSV(path)
 }
@@ -270,16 +268,16 @@ func generateCSVReport(report []QueryResult, filename string, config *Config) er
 	}
 	defer file.Close()
 
-	headers := []string{"Model", "stats_healthy_ratio", "modify_ratio", "query_label", 
-		"estimation_error_ratio", "estimation_error_value", "query", "duration_ms", 
+	headers := []string{"Model", "stats_healthy_ratio", "modify_ratio", "query_label",
+		"estimation_error_ratio", "estimation_error_value", "query", "duration_ms",
 		"explain", "risk_operators_count"}
-	
+
 	fmt.Fprintf(file, "%s\n", joinStrings(headers, ","))
-	
+
 	for _, result := range report {
 		statsHealthy := getStatsHealthyForModel(result.Model, config)
 		modifyRatio := calculateModifyRatio(result.Model, config)
-		
+
 		row := []string{
 			result.Model,
 			fmt.Sprintf("%.3f", statsHealthy),
@@ -294,7 +292,7 @@ func generateCSVReport(report []QueryResult, filename string, config *Config) er
 		}
 		fmt.Fprintf(file, "%s\n", joinStrings(row, ","))
 	}
-	
+
 	fmt.Printf("CSV Report saved to: %s\n", filename)
 	return nil
 }
@@ -336,7 +334,7 @@ func generateHTMLReport(report []QueryResult, filename string, config *Config) e
                 <th>Query</th>
             </tr>
         </thead>
-        <tbody>`, 
+        <tbody>`,
 		time.Now().Format("2006-01-02 15:04:05"),
 		time.Now().Format("2006-01-02 15:04:05"),
 		len(report))
@@ -346,7 +344,7 @@ func generateHTMLReport(report []QueryResult, filename string, config *Config) e
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			rowClass = "class=\"high-error\""
 		}
-		
+
 		htmlContent += fmt.Sprintf(`
             <tr %s>
                 <td>%s</td>
@@ -354,7 +352,7 @@ func generateHTMLReport(report []QueryResult, filename string, config *Config) e
                 <td>%.2f</td>
                 <td>%.3f</td>
                 <td>%s</td>
-            </tr>`, 
+            </tr>`,
 			rowClass,
 			result.Model,
 			result.EstimationErrorRatio,
@@ -379,15 +377,15 @@ func displayTopQueries(report []QueryResult) {
 	fmt.Println("\nTop 10 queries by estimation error ratio:")
 	fmt.Printf("%-20s %-15s %-15s %-15s %s\n", "Model", "Error Ratio", "Error Value", "Duration (ms)", "Query")
 	fmt.Println(string(make([]byte, 120)))
-	
+
 	// 这里应该按 estimation_error_ratio 排序，简化处理
 	for i, result := range report {
 		if i >= 10 {
 			break
 		}
-		fmt.Printf("%-20s %-15.2f %-15.2f %-15.3f %s\n", 
-			result.Model, 
-			result.EstimationErrorRatio, 
+		fmt.Printf("%-20s %-15.2f %-15.2f %-15.3f %s\n",
+			result.Model,
+			result.EstimationErrorRatio,
 			result.EstimationErrorValue,
 			result.DurationMs,
 			truncateString(result.Query, 50))
@@ -404,23 +402,16 @@ func calculateModifyRatio(modelName string, config *Config) float64 {
 		if model.Name == modelName {
 			params := model.Params
 			incremental := model.Incremental
-			
+
 			baseRows := getFloatValue(params, "rows")
 			insertRows := getFloatValue(incremental, "insert_rows")
 			updateRatio := getFloatValue(incremental, "update_ratio")
 			deleteRatio := getFloatValue(incremental, "delete_ratio")
-			
+
 			if baseRows > 0 {
-				return (insertRows/baseRows) + updateRatio + deleteRatio
+				return (insertRows / baseRows) + updateRatio + deleteRatio
 			}
 		}
 	}
 	return 0.0
 }
-
-
-
-
-
-
-
