@@ -39,7 +39,7 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 		dg.generateIntColumn(df, modelType, start, end, rows, params)
 	} else {
 		// Default integer column
-		df.AddColumn(fmt.Sprintf("%s_int", modelConfig.Name))
+		df.AddColumn("col_int")
 		for i := 0; i < rows; i++ {
 			df.data[i] = append(df.data[i], i+1)
 		}
@@ -50,7 +50,7 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 		dg.generateVarcharColumn(df, varcharRange, rows)
 	} else {
 		// Default varchar column
-		df.AddColumn(fmt.Sprintf("%s_varchar", modelConfig.Name))
+		df.AddColumn("col_varchar")
 		for i := 0; i < rows; i++ {
 			df.data[i] = append(df.data[i], dg.generateRandomWord())
 		}
@@ -63,7 +63,7 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 		dg.generateDatetimeColumn(df, startStr, endStr, rows, params)
 	} else {
 		// Default datetime column
-		df.AddColumn(fmt.Sprintf("%s_datetime", modelConfig.Name))
+		df.AddColumn("col_datetime")
 		now := time.Now()
 		for i := 0; i < rows; i++ {
 			df.data[i] = append(df.data[i], now)
@@ -79,10 +79,10 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 	result := df.Sample(1.0).ResetIndex(true)
 
 	// Convert datetime to string format for CSV compatibility
-	if datetimeCol := result.GetColumn(fmt.Sprintf("%s_datetime", modelConfig.Name)); datetimeCol != nil {
+	if datetimeCol := result.GetColumn("col_datetime"); datetimeCol != nil {
 		for i, val := range datetimeCol {
 			if t, ok := val.(time.Time); ok {
-				result.data[i][getColumnIndex(result, fmt.Sprintf("%s_datetime", modelConfig.Name))] = t.Format("2006-01-02")
+				result.data[i][getColumnIndex(result, "col_datetime")] = t.Format("2006-01-02")
 			}
 		}
 	}

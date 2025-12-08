@@ -108,6 +108,7 @@ func main() {
 			} else {
 				fmt.Printf("Generating base data for %s...\n", name)
 				df := dataGenerator.Generate(model)
+				fmt.Println(">>>>>> ", df.columns)
 				csvPath := fmt.Sprintf("dataset_%s_base.csv", name)
 				if err := saveDataFrameToCSV(df, csvPath); err != nil {
 					log.Printf("Error saving CSV for %s: %v", name, err)
@@ -167,7 +168,7 @@ func main() {
 		for _, model := range config.Models {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
-				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
+				cols := []string{"col_int", "col_datetime"}
 				stats := dbManager.GetTableStats(name, cols)
 
 				outfile := fmt.Sprintf("queries_%s.sql", name)
