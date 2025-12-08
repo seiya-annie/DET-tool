@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 // DBManager manages database operations
@@ -57,23 +57,25 @@ func (dbm *DBManager) EnsureConnection() {
 }
 
 // InitDB initializes the database
-func (dbm *DBManager) InitDB() {
+func (dbm *DBManager) InitDB(dropIfExists bool) {
 	dbName := dbm.config.DBName
-	
-	// Drop database if exists
-	_, err := dbm.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
-	if err != nil {
-		log.Printf("Error dropping database: %v", err)
-	}
 
-	// Create database
-	_, err = dbm.db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", dbName))
-	if err != nil {
-		log.Printf("Error creating database: %v", err)
+	if dropIfExists {
+		// Drop database if exists
+		_, err := dbm.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName))
+		if err != nil {
+			log.Printf("Error dropping database: %v", err)
+		}
+
+		// Create database
+		_, err = dbm.db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", dbName))
+		if err != nil {
+			log.Printf("Error creating database: %v", err)
+		}
 	}
 
 	// Use database
-	_, err = dbm.db.Exec(fmt.Sprintf("USE %s", dbName))
+	_, err := dbm.db.Exec(fmt.Sprintf("USE %s", dbName))
 	if err != nil {
 		log.Printf("Error selecting database: %v", err)
 	}
@@ -100,7 +102,7 @@ func (dbm *DBManager) CreateTable(tableName string, df *DataFrame) {
 	// Build column definitions
 	cols := []string{}
 	indexes := []string{}
-	
+
 	for _, colName := range df.columns {
 		sqlType := dbm.inferSQLType(df, colName)
 		cols = append(cols, fmt.Sprintf("`%s` %s", colName, sqlType))
@@ -109,15 +111,16 @@ func (dbm *DBManager) CreateTable(tableName string, df *DataFrame) {
 
 	// Add primary key
 	cols = append([]string{"`id` bigint NOT NULL AUTO_INCREMENT"}, cols...)
-	
+
 	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		%s,
 		%s,
-		PRIMARY KEY (` + "`id`" + `)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`, 
-		tableName, 
+		PRIMARY KEY (`+"`id`"+`)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
+		tableName,
 		strings.Join(cols, ", "),
 		strings.Join(indexes, ", "))
+	fmt.Println(ddl)
 
 	// Drop table if exists
 	_, err := dbm.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
@@ -169,6 +172,7 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 
 	// Replace backslashes for Windows
 	absPath = strings.ReplaceAll(absPath, "\\", "/")
+	mysql.RegisterLocalFile(absPath)
 
 	sql := fmt.Sprintf(`LOAD DATA LOCAL INFILE '%s' INTO TABLE %s 
 		FIELDS TERMINATED BY ',' ENCLOSED BY '"' 
@@ -192,7 +196,7 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 // GetSingleTableHealth gets stats health for a specific table
 func (dbm *DBManager) GetSingleTableHealth(tableName string) int {
 	dbName := dbm.config.DBName
-	
+
 	query := fmt.Sprintf("SHOW STATS_HEALTHY WHERE Db_name = '%s' AND Table_name = '%s'", dbName, tableName)
 	rows, err := dbm.db.Query(query)
 	if err != nil {
@@ -202,14 +206,14 @@ func (dbm *DBManager) GetSingleTableHealth(tableName string) int {
 
 	var dbNameResult, tableNameResult string
 	var healthy int
-	
+
 	if rows.Next() {
 		err := rows.Scan(&dbNameResult, &tableNameResult, &healthy, &healthy)
 		if err == nil {
 			return healthy
 		}
 	}
-	
+
 	return 0
 }
 
@@ -227,14 +231,14 @@ func (dbm *DBManager) AnalyzeTable(tableName string) {
 	// Wait for stats to become healthy
 	fmt.Println("    [DB] Waiting for stats to become healthy (100%)...")
 	maxRetries := 20
-	
+
 	for i := 0; i < maxRetries; i++ {
 		health := dbm.GetSingleTableHealth(tableName)
 		if health == 100 {
 			break
 		}
 		time.Sleep(1 * time.Second)
-		
+
 		if i == maxRetries-1 {
 			fmt.Printf("    [Warning] Stats health reached %d%%, timed out waiting for 100%%.\n", health)
 		}
@@ -248,7 +252,7 @@ func (dbm *DBManager) AnalyzeTable(tableName string) {
 // ExecuteSQLFile executes SQL statements from a file
 func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
 	fmt.Printf("    [DB] Executing SQL script: %s\n", sqlPath)
-	
+
 	if _, err := os.Stat(sqlPath); os.IsNotExist(err) {
 		return
 	}
@@ -260,7 +264,7 @@ func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
 	}
 
 	statements := strings.Split(string(content), ";")
-	
+
 	for _, statement := range statements {
 		statement = strings.TrimSpace(statement)
 		if statement == "" {
@@ -330,13 +334,13 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 		estErrorValue, estErrorRatio, riskCount := dbm.parseExplainAnalyze(explainResult)
 
 		result := QueryResult{
-			QueryID:               queryID,
-			Query:                 query,
-			DurationMs:            float64(duration),
-			Explain:               explainResult,
-			EstimationErrorValue:  estErrorValue,
-			EstimationErrorRatio:  estErrorRatio,
-			RiskOperatorsCount:    riskCount,
+			QueryID:              queryID,
+			Query:                query,
+			DurationMs:           float64(duration),
+			Explain:              explainResult,
+			EstimationErrorValue: estErrorValue,
+			EstimationErrorRatio: estErrorRatio,
+			RiskOperatorsCount:   riskCount,
 		}
 		results = append(results, result)
 		queryID++
@@ -359,22 +363,22 @@ func (dbm *DBManager) parseExplainAnalyze(explainText string) (float64, float64,
 				"est_rows": 100.0,
 				"act_rows": 110.0,
 			}
-			
+
 			estRows := operator["est_rows"].(float64)
 			actRows := operator["act_rows"].(float64)
-			
+
 			estErrorValue := estRows - actRows
 			if estErrorValue < 0 {
 				estErrorValue = -estErrorValue
 			}
-			
+
 			estErrorRatio := maxFloat64(estRows, actRows) / minFloat64(estRows, actRows)
 			isRisk := estErrorRatio >= 10 && estErrorValue >= 1000
-			
+
 			operator["estimation_error_value"] = estErrorValue
 			operator["estimation_error_ratio"] = estErrorRatio
 			operator["is_risk"] = isRisk
-			
+
 			operators = append(operators, operator)
 		}
 	}
@@ -385,7 +389,7 @@ func (dbm *DBManager) parseExplainAnalyze(explainText string) (float64, float64,
 
 	var totalErrorValue, totalErrorRatio float64
 	var riskCount int
-	
+
 	for _, op := range operators {
 		totalErrorValue += op["estimation_error_value"].(float64)
 		totalErrorRatio += op["estimation_error_ratio"].(float64)
@@ -413,7 +417,7 @@ func (dbm *DBManager) GetTableStats(tableName string, columns []string) map[stri
 
 		query := fmt.Sprintf("SELECT MIN(`%s`), MAX(`%s`) FROM `%s`", col, col, tableName)
 		var minVal, maxVal sql.NullString
-		
+
 		err := dbm.db.QueryRow(query).Scan(&minVal, &maxVal)
 		if err != nil {
 			fmt.Printf("      [Warning] Failed to fetch stats for %s.%s: %v\n", tableName, col, err)

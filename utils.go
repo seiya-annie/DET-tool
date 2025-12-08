@@ -139,3 +139,9 @@ func parseIntValue(val interface{}) int {
 		return 0
 	}
 }
+
+func must(err error, msg ...string) {
+	if err != nil {
+		panic(fmt.Sprintf("%s: %s", strings.Join(msg, " "), err))
+	}
+}

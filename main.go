@@ -92,9 +92,6 @@ func main() {
 	}
 
 	dbManager := NewDBManager(*dbConfig)
-	dbManager.InitDB()
-	dbManager.DisableAutoAnalyze()
-
 	externalRunner := NewExternalBenchRunner(*dbConfig)
 	dataGenerator := NewDataGenerator()
 	queryBuilder := NewQueryBuilder()
@@ -102,6 +99,8 @@ func main() {
 	// Step 1: Base Data Generation
 	if genBase {
 		fmt.Println("\n=== [Step 1] Base Data Generation ===")
+		dbManager.InitDB(true)
+		dbManager.DisableAutoAnalyze()
 		for _, model := range config.Models {
 			name := model.Name
 			if contains(EXTERNAL_MODELS, model.Type) {
@@ -164,6 +163,7 @@ func main() {
 	// Step 3: Generate Queries (Based on CURRENT DB State)
 	if genQuery {
 		fmt.Println("\n=== [Step 3] Generate Queries (Adaptive) ===")
+		dbManager.InitDB(false)
 		for _, model := range config.Models {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
