@@ -181,6 +181,7 @@ func main() {
 	// Step 4: Execute Queries & Report
 	if execQuery {
 		fmt.Println("\n=== [Step 4] Execute Queries & Report ===")
+		dbManager.InitDB(false)
 
 		statsHealthyInfo := dbManager.GetStatsHealthy()
 		fmt.Printf("Stats healthy info: %v\n", statsHealthyInfo)
