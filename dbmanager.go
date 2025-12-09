@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
 	"log"
 	"os"
@@ -170,13 +171,43 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 		return
 	}
 
+	// 1. Read the CSV header to determine correct column mapping
+	f, err := os.Open(absPath)
+	if err != nil {
+		log.Printf("    [Error] Failed to open CSV to read header: %v", err)
+		return
+	}
+
+	// Create a temporary reader just to get the header
+	csvReader := csv.NewReader(f)
+	header, err := csvReader.Read()
+	f.Close() // Close file immediately after reading header
+
+	if err != nil {
+		log.Printf("    [Error] Failed to read CSV header: %v", err)
+		return
+	}
+
+	// Build the column list string, e.g., (`col_int`, `col_varchar`, `col_datetime`)
+	// This ensures we map the CSV columns to the correct table columns and skip 'id'
+	quotedCols := make([]string, len(header))
+	for i, col := range header {
+		quotedCols[i] = fmt.Sprintf("`%s`", strings.TrimSpace(col))
+	}
+	columnListSql := fmt.Sprintf("(%s)", strings.Join(quotedCols, ", "))
+
 	// Replace backslashes for Windows
 	absPath = strings.ReplaceAll(absPath, "\\", "/")
 	mysql.RegisterLocalFile(absPath)
 
+	// 2. Construct SQL
+	// - Changed ENCLOSED BY '"' to OPTIONALLY ENCLOSED BY '"' to support unquoted CSVs
+	// - Added columnListSql to explicitly map columns
 	sql := fmt.Sprintf(`LOAD DATA LOCAL INFILE '%s' INTO TABLE %s 
-		FIELDS TERMINATED BY ',' ENCLOSED BY '"' 
-		LINES TERMINATED BY '\n' IGNORE 1 LINES`, absPath, tableName)
+		FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' 
+		LINES TERMINATED BY '\n' 
+		IGNORE 1 LINES 
+		%s`, absPath, tableName, columnListSql)
 
 	// Enable local infile for this session
 	_, err = dbm.db.Exec("SET GLOBAL local_infile = 1")
@@ -190,7 +221,7 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 		return
 	}
 
-	fmt.Printf("    [DB] Data loaded into %s\n", tableName)
+	fmt.Printf("    [DB] Data loaded into %s (Columns: %s)\n", tableName, strings.Join(header, ", "))
 }
 
 // GetSingleTableHealth gets stats health for a specific table

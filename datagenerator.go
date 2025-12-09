@@ -19,6 +19,17 @@ func NewDataGenerator() *DataGenerator {
 	}
 }
 
+// appendValue appends a value to a specific row, creating the row if it doesn't exist
+func (dg *DataGenerator) appendValue(df *DataFrame, rowIndex int, value interface{}) {
+	if rowIndex < len(df.data) {
+		// Row exists, append to it
+		df.data[rowIndex] = append(df.data[rowIndex], value)
+	} else {
+		// Row doesn't exist, create new row
+		df.AddRow([]interface{}{value})
+	}
+}
+
 // Generate generates data based on model configuration
 func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 	modelType := modelConfig.Type
@@ -31,7 +42,7 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 
 	df := NewDataFrame()
 
-	// Generate integer column
+	// 1. Generate integer column
 	if intRange, ok := params["int_range"].([]interface{}); ok && len(intRange) >= 2 {
 		start := int(getFloatValue(map[string]interface{}{"val": intRange[0]}, "val"))
 		end := int(getFloatValue(map[string]interface{}{"val": intRange[1]}, "val"))
@@ -41,22 +52,24 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 		// Default integer column
 		df.AddColumn("col_int")
 		for i := 0; i < rows; i++ {
-			df.data[i] = append(df.data[i], i+1)
+			// Fix: Use appendValue instead of direct access which might panic or add new rows incorrectly
+			dg.appendValue(df, i, i+1)
 		}
 	}
 
-	// Generate varchar column
+	// 2. Generate varchar column
 	if varcharRange, ok := params["varchar_range"].(map[string]interface{}); ok {
 		dg.generateVarcharColumn(df, varcharRange, rows)
 	} else {
 		// Default varchar column
 		df.AddColumn("col_varchar")
 		for i := 0; i < rows; i++ {
-			df.data[i] = append(df.data[i], dg.generateRandomWord())
+			// Fix: Use appendValue to ensure we attach to existing rows
+			dg.appendValue(df, i, dg.generateRandomWord())
 		}
 	}
 
-	// Generate datetime column
+	// 3. Generate datetime column
 	if dateRange, ok := params["date_range"].([]interface{}); ok && len(dateRange) >= 2 {
 		startStr := fmt.Sprintf("%v", dateRange[0])
 		endStr := fmt.Sprintf("%v", dateRange[1])
@@ -66,7 +79,8 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 		df.AddColumn("col_datetime")
 		now := time.Now()
 		for i := 0; i < rows; i++ {
-			df.data[i] = append(df.data[i], now)
+			// Fix: Use appendValue to ensure we attach to existing rows
+			dg.appendValue(df, i, now)
 		}
 	}
 
@@ -80,9 +94,14 @@ func (dg *DataGenerator) Generate(modelConfig ModelConfig) *DataFrame {
 
 	// Convert datetime to string format for CSV compatibility
 	if datetimeCol := result.GetColumn("col_datetime"); datetimeCol != nil {
-		for i, val := range datetimeCol {
-			if t, ok := val.(time.Time); ok {
-				result.data[i][getColumnIndex(result, "col_datetime")] = t.Format("2006-01-02")
+		colIdx := getColumnIndex(result, "col_datetime")
+		if colIdx != -1 {
+			for i, row := range result.data {
+				if colIdx < len(row) {
+					if t, ok := row[colIdx].(time.Time); ok {
+						result.data[i][colIdx] = t.Format("2006-01-02")
+					}
+				}
 			}
 		}
 	}
@@ -115,8 +134,17 @@ func (dg *DataGenerator) generateSkewedInt(df *DataFrame, start, end, rows, ndv 
 	// Create value pool
 	pool := make([]int, ndv)
 	step := (end - start) / ndv
+	// Protect against div by zero if ndv is huge or range is small, though logic above handles ndv
+	if step == 0 {
+		step = 1
+	}
+
 	for i := 0; i < ndv; i++ {
-		pool[i] = start + i*step
+		val := start + i*step
+		if val > end {
+			val = end
+		}
+		pool[i] = val
 	}
 
 	// Shuffle pool
@@ -140,7 +168,8 @@ func (dg *DataGenerator) generateSkewedInt(df *DataFrame, start, end, rows, ndv 
 	// Generate values
 	for i := 0; i < rows; i++ {
 		value := dg.sampleFromDistribution(pool, probDist)
-		df.AddRow([]interface{}{value})
+		// Fix: Use appendValue
+		dg.appendValue(df, i, value)
 	}
 }
 
@@ -149,14 +178,23 @@ func (dg *DataGenerator) generateLowCardinalityInt(df *DataFrame, start, end, ro
 	// Create small pool of distinct values
 	pool := make([]int, ndv)
 	step := (end - start) / ndv
+	if step == 0 {
+		step = 1
+	}
+
 	for i := 0; i < ndv; i++ {
-		pool[i] = start + i*step
+		val := start + i*step
+		if val > end {
+			val = end
+		}
+		pool[i] = val
 	}
 
 	// Generate values from the small pool
 	for i := 0; i < rows; i++ {
-		value := pool[dg.rng.Intn(ndv)]
-		df.AddRow([]interface{}{value})
+		value := pool[dg.rng.Intn(len(pool))] // Use len(pool) to be safe
+		// Fix: Use appendValue
+		dg.appendValue(df, i, value)
 	}
 }
 
@@ -165,14 +203,23 @@ func (dg *DataGenerator) generateUniformInt(df *DataFrame, start, end, rows, ndv
 	// Create value pool
 	pool := make([]int, ndv)
 	step := (end - start) / ndv
+	if step == 0 {
+		step = 1
+	}
+
 	for i := 0; i < ndv; i++ {
-		pool[i] = start + i*step
+		val := start + i*step
+		if val > end {
+			val = end
+		}
+		pool[i] = val
 	}
 
 	// Generate values uniformly
 	for i := 0; i < rows; i++ {
-		value := pool[dg.rng.Intn(ndv)]
-		df.AddRow([]interface{}{value})
+		value := pool[dg.rng.Intn(len(pool))]
+		// Fix: Use appendValue
+		dg.appendValue(df, i, value)
 	}
 }
 
@@ -189,7 +236,8 @@ func (dg *DataGenerator) generateVarcharColumn(df *DataFrame, varcharRange map[s
 
 		for i := 0; i < rows; i++ {
 			value := optionStrings[dg.rng.Intn(len(optionStrings))]
-			df.AddRow([]interface{}{value})
+			// Fix: Use appendValue
+			dg.appendValue(df, i, value)
 		}
 	} else {
 		// Generate with prefix and suffix range
@@ -209,7 +257,8 @@ func (dg *DataGenerator) generateVarcharColumn(df *DataFrame, varcharRange map[s
 		for i := 0; i < rows; i++ {
 			suffix := dg.rng.Intn(end-start+1) + start
 			value := fmt.Sprintf("%s%d", prefix, suffix)
-			df.AddRow([]interface{}{value})
+			// Fix: Use appendValue
+			dg.appendValue(df, i, value)
 		}
 	}
 }
@@ -240,7 +289,8 @@ func (dg *DataGenerator) generateDatetimeColumn(df *DataFrame, startStr, endStr 
 	// Generate values
 	for i := 0; i < rows; i++ {
 		value := datePool[dg.rng.Intn(len(datePool))]
-		df.AddRow([]interface{}{value})
+		// Fix: Use appendValue
+		dg.appendValue(df, i, value)
 	}
 }
 
