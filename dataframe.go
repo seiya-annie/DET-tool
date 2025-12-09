@@ -42,11 +42,11 @@ func (df *DataFrame) GetColumn(name string) []interface{} {
 			break
 		}
 	}
-	
+
 	if colIndex == -1 {
 		return nil
 	}
-	
+
 	result := make([]interface{}, len(df.data))
 	for i, row := range df.data {
 		if colIndex < len(row) {
@@ -74,13 +74,13 @@ func (df *DataFrame) Sample(frac float64) *DataFrame {
 	}
 	copy(result.columns, df.columns)
 	copy(result.data, df.data)
-	
+
 	// Fisher-Yates shuffle
 	for i := len(result.data) - 1; i > 0; i-- {
 		j := i // In real implementation, use random number
 		result.data[i], result.data[j] = result.data[j], result.data[i]
 	}
-	
+
 	return result
 }
 
@@ -96,26 +96,30 @@ func (df *DataFrame) SaveCSV(filename string) error {
 		return err
 	}
 	defer file.Close()
-	
+
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
-	
+
 	// Write header
 	if err := writer.Write(df.columns); err != nil {
 		return err
 	}
-	
+
 	// Write data
 	for _, row := range df.data {
 		stringRow := make([]string, len(row))
 		for i, val := range row {
-			stringRow[i] = fmt.Sprintf("%v", val)
+			if val == nil {
+				stringRow[i] = "" // Change: Write empty string for nil instead of "<nil>"
+			} else {
+				stringRow[i] = fmt.Sprintf("%v", val)
+			}
 		}
 		if err := writer.Write(stringRow); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -126,29 +130,35 @@ func LoadDataFrameFromCSV(filename string) (*DataFrame, error) {
 		return nil, err
 	}
 	defer file.Close()
-	
+
 	reader := csv.NewReader(file)
-	
+
 	// Read header
 	columns, err := reader.Read()
 	if err != nil {
 		return nil, err
 	}
-	
+
 	df := &DataFrame{
 		columns: columns,
 		data:    make([][]interface{}, 0),
 	}
-	
+
 	// Read data
 	for {
 		record, err := reader.Read()
 		if err != nil {
 			break
 		}
-		
+
 		row := make([]interface{}, len(record))
 		for i, val := range record {
+			// Change: Handle nil values explicitly
+			if val == "" || val == "<nil>" {
+				row[i] = nil
+				continue
+			}
+
 			// Try to parse as different types
 			if intVal, err := strconv.Atoi(val); err == nil {
 				row[i] = intVal
@@ -162,7 +172,7 @@ func LoadDataFrameFromCSV(filename string) (*DataFrame, error) {
 		}
 		df.data = append(df.data, row)
 	}
-	
+
 	return df, nil
 }
 
@@ -171,17 +181,17 @@ func Concat(dfs []*DataFrame, ignoreIndex bool) *DataFrame {
 	if len(dfs) == 0 {
 		return NewDataFrame()
 	}
-	
+
 	result := &DataFrame{
 		columns: make([]string, len(dfs[0].columns)),
 		data:    make([][]interface{}, 0),
 	}
 	copy(result.columns, dfs[0].columns)
-	
+
 	for _, df := range dfs {
 		result.data = append(result.data, df.data...)
 	}
-	
+
 	return result
 }
 
@@ -212,7 +222,7 @@ func ColumnToStringSlice(df *DataFrame, columnName string) []string {
 	if col == nil {
 		return nil
 	}
-	
+
 	result := make([]string, len(col))
 	for i, val := range col {
 		result[i] = fmt.Sprintf("%v", val)
@@ -226,7 +236,7 @@ func ColumnToIntSlice(df *DataFrame, columnName string) []int {
 	if col == nil {
 		return nil
 	}
-	
+
 	result := make([]int, len(col))
 	for i, val := range col {
 		switch v := val.(type) {
@@ -271,12 +281,12 @@ func ParseDateRange(dateStr string) (time.Time, error) {
 		"01/02/2006",
 		"Jan 2, 2006",
 	}
-	
+
 	for _, format := range formats {
 		if t, err := time.Parse(format, strings.TrimSpace(dateStr)); err == nil {
 			return t, nil
 		}
 	}
-	
+
 	return time.Time{}, fmt.Errorf("unable to parse date: %s", dateStr)
 }

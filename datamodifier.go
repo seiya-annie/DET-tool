@@ -60,12 +60,12 @@ func (dm *DataModifier) cloneDataFrame(df *DataFrame) *DataFrame {
 		data:    make([][]interface{}, len(df.data)),
 	}
 	copy(cloned.columns, df.columns)
-	
+
 	for i, row := range df.data {
 		cloned.data[i] = make([]interface{}, len(row))
 		copy(cloned.data[i], row)
 	}
-	
+
 	return cloned
 }
 
@@ -94,21 +94,14 @@ func (dm *DataModifier) applyInserts(df *DataFrame, modelConfig ModelConfig, tab
 	}
 
 	// Generate new data
+	// The generator will now automatically use tableName_int, tableName_varchar etc.
 	dataGen := NewDataGenerator()
 	newData := dataGen.Generate(tempConfig)
-
-	// Rename columns to match the original table
-	renameMap := map[string]string{
-		"col_int":      fmt.Sprintf("%s_int", tableName),
-		"col_varchar":  fmt.Sprintf("%s_varchar", tableName),
-		"col_datetime": fmt.Sprintf("%s_datetime", tableName),
-	}
-	newData.RenameColumns(renameMap)
 
 	// Log the INSERT statements
 	if dm.sqlGen != nil {
 		dm.sqlGen.LogComment(fmt.Sprintf("INSERT operations for %s", tableName))
-		dm.sqlGen.LogInsert(tableName, newData)
+		dm.sqlGen.LogInsertBatch(tableName, newData, 200)
 	}
 
 	// Concatenate the new data with existing data
@@ -121,9 +114,10 @@ func (dm *DataModifier) applyUpdates(df *DataFrame, modelConfig ModelConfig, tab
 		return df
 	}
 
+	// Use correct column name prefix
 	idColumn := fmt.Sprintf("%s_int", tableName)
 	idColIndex := getColumnIndex(df, idColumn)
-	
+
 	if idColIndex == -1 {
 		fmt.Printf("    [Warning] ID column %s not found for updates\n", idColumn)
 		return df
@@ -153,7 +147,7 @@ func (dm *DataModifier) applyUpdates(df *DataFrame, modelConfig ModelConfig, tab
 	// Randomly select rows to update
 	selectedIndices := make([]int, updateCount)
 	used := make(map[int]bool)
-	
+
 	for i := 0; i < updateCount; i++ {
 		for {
 			idx := validIndices[dm.rng.Intn(len(validIndices))]
@@ -190,14 +184,6 @@ func (dm *DataModifier) applyUpdates(df *DataFrame, modelConfig ModelConfig, tab
 	// Generate new data for updates
 	dataGen := NewDataGenerator()
 	updateData := dataGen.Generate(tempConfig)
-
-	// Rename columns to match the original table
-	renameMap := map[string]string{
-		"col_int":      idColumn,
-		"col_varchar":  fmt.Sprintf("%s_varchar", tableName),
-		"col_datetime": fmt.Sprintf("%s_datetime", tableName),
-	}
-	updateData.RenameColumns(renameMap)
 
 	// Collect IDs and new values for SQL generation
 	ids := make([]interface{}, updateCount)
@@ -305,10 +291,6 @@ func (dm *DataModifier) applyDeletes(df *DataFrame, tableName string, deleteRati
 }
 
 // Helper functions
-
-
-
-// Helper function to check if a value is null
 func isNull(val interface{}) bool {
 	if val == nil {
 		return true
@@ -319,7 +301,6 @@ func isNull(val interface{}) bool {
 	return false
 }
 
-// Helper function to generate a random string
 func randomString(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	result := make([]byte, length)
@@ -329,7 +310,6 @@ func randomString(length int) string {
 	return string(result)
 }
 
-// Helper function to generate a random word
 func randomWord() string {
 	words := []string{
 		"apple", "banana", "cherry", "date", "elderberry",
@@ -338,6 +318,3 @@ func randomWord() string {
 	}
 	return words[rand.Intn(len(words))]
 }
-
-
-

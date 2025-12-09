@@ -19,7 +19,8 @@ func NewReportGenerator() *ReportGenerator {
 }
 
 // GenerateCSVReport generates a CSV report from query results
-func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename string, config *Config) error {
+// Change: Added statsHealthy map[string]int parameter
+func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename string, config *Config, statsHealthy map[string]int) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("failed to create CSV file: %v", err)
@@ -31,23 +32,24 @@ func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename str
 
 	// Write header
 	headers := []string{
-		"Model", "stats_healthy_ratio", "modify_ratio", "query_label",
-		"estimation_error_ratio", "estimation_error_value", "query",
-		"duration_ms", "explain", "risk_operators_count",
+		"Model", "Stats Healthy", "Modify Ratio", "Query Label",
+		"Est Error Ratio", "Est Error Value", "Query SQL", "Duration (ms)",
+		"Explain Plan", "Risk Operators Count",
 	}
-	
+
 	if err := writer.Write(headers); err != nil {
 		return fmt.Errorf("failed to write CSV header: %v", err)
 	}
 
 	// Write data rows
 	for _, result := range results {
-		statsHealthy := rg.getStatsHealthyForModel(result.Model, config)
+		// Use the map to get healthy value
+		healthyVal := rg.getStatsHealthyForModel(result.Model, statsHealthy)
 		modifyRatio := rg.calculateModifyRatio(result.Model, config)
 
 		row := []string{
 			result.Model,
-			fmt.Sprintf("%.3f", statsHealthy),
+			fmt.Sprintf("%d", healthyVal), // Integer 0-100
 			fmt.Sprintf("%.3f", modifyRatio),
 			"", // query_label
 			fmt.Sprintf("%.2f", result.EstimationErrorRatio),
@@ -68,7 +70,8 @@ func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename str
 }
 
 // GenerateHTMLReport generates an HTML report from query results
-func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename string, config *Config) error {
+// Change: Added statsHealthy map[string]int parameter
+func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename string, config *Config, statsHealthy map[string]int) error {
 	file, err := os.Create(filename)
 	if err != nil {
 		return fmt.Errorf("failed to create HTML file: %v", err)
@@ -79,6 +82,7 @@ func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename st
 	totalQueries := len(results)
 	badCases := 0
 	for _, result := range results {
+		// Rule: err_ratio >= 10 && err_val >= 1000
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			badCases++
 		}
@@ -92,7 +96,7 @@ func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename st
 	})
 
 	// Generate HTML content
-	htmlContent := rg.generateHTMLContent(sortedResults, config, totalQueries, badCases)
+	htmlContent := rg.generateHTMLContent(sortedResults, config, totalQueries, badCases, statsHealthy)
 
 	if _, err := file.WriteString(htmlContent); err != nil {
 		return fmt.Errorf("failed to write HTML content: %v", err)
@@ -103,9 +107,12 @@ func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename st
 }
 
 // generateHTMLContent generates the HTML content for the report
-func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Config, totalQueries, badCases int) string {
+func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Config, totalQueries, badCases int, statsHealthy map[string]int) string {
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
 
+	// Fixed Template:
+	// 1. Used 100%% for CSS width
+	// 2. Ensured %s placeholders are in correct positions
 	htmlTemplate := `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -142,6 +149,7 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             border-collapse: collapse; 
             margin-top: 20px; 
             font-size: 12px; 
+            table-layout: fixed; /* Added for better overflow handling */
         }
         th { 
             background-color: #4CAF50; 
@@ -157,6 +165,8 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             padding: 8px; 
             border-bottom: 1px solid #ddd; 
             vertical-align: top; 
+            overflow: hidden; /* Added */
+            text-overflow: ellipsis; /* Added */
         }
         tr:nth-child(even) { 
             background-color: #f9f9f9; 
@@ -170,18 +180,19 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             font-weight: bold; 
         }
         .query-cell { 
-            max-width: 300px; 
+            width: 20%%;
             word-wrap: break-word; 
             font-family: 'Courier New', monospace; 
             font-size: 11px; 
         }
         .explain-cell { 
-            max-width: 400px; 
+            width: 30%%;
             word-wrap: break-word; 
             font-family: 'Courier New', monospace; 
             font-size: 10px; 
             color: #666; 
             white-space: pre-wrap; 
+            overflow-x: auto; /* Allow horizontal scroll for explain */
         }
         .numeric-cell { 
             text-align: left; 
@@ -208,12 +219,6 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             font-size: 12px; 
             color: #666; 
             margin-top: 5px; 
-        }
-        .chart-container {
-            margin: 20px 0;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: 5px;
         }
         .model-stats {
             margin: 10px 0;
@@ -252,15 +257,15 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             <thead>
                 <tr>
                     <th>Model</th>
-                    <th>Stats Healthy Ratio</th>
+                    <th>Stats Healthy</th>
                     <th>Modify Ratio</th>
                     <th>Query Label</th>
-                    <th>Estimation Error Ratio</th>
-                    <th>Estimation Error Value</th>
+                    <th>Est Error Ratio</th>
+                    <th>Est Error Value</th>
                     <th>Query SQL</th>
                     <th>Duration (ms)</th>
                     <th>Explain Plan</th>
-                    <th>Risk Operators</th>
+                    <th>Risk Ops</th>
                 </tr>
             </thead>
             <tbody>
@@ -275,37 +280,40 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
 	modelStats := rg.generateModelStats(results, config)
 
 	// Generate table rows
-	tableRows := rg.generateTableRows(results, config)
+	tableRows := rg.generateTableRows(results, config, statsHealthy)
 
 	successRate := 100.0
 	if totalQueries > 0 {
-		successRate = float64(totalQueries-badCases) / float64(totalQueries) * 100
+		successRate = float64(totalQueries-badCases) / float64(totalQueries) * 100.0
 	}
 
+	// 确保参数顺序和类型与 % 占位符严格对应
 	return fmt.Sprintf(htmlTemplate,
-		currentTime,
-		currentTime,
-		totalQueries,
-		badCases,
-		successRate,
-		modelStats,
-		tableRows)
+		currentTime,  // Title %s
+		currentTime,  // Report Generated %s
+		totalQueries, // Total Queries %d
+		totalQueries, // Stat Box Total %d
+		badCases,     // Stat Box Bad %d
+		successRate,  // Stat Box Success %.1f
+		modelStats,   // Model Stats Div %s
+		tableRows) // Table Body %s
 }
 
 // generateModelStats generates statistics by model
 func (rg *ReportGenerator) generateModelStats(results []QueryResult, config *Config) string {
 	modelStats := make(map[string]struct {
-		TotalQueries     int
-		BadCases         int
-		AvgErrorRatio    float64
-		AvgErrorValue    float64
-		AvgDuration      float64
+		TotalQueries  int
+		BadCases      int
+		AvgErrorRatio float64
+		AvgErrorValue float64
+		AvgDuration   float64
 	})
 
 	// Aggregate statistics by model
 	for _, result := range results {
 		stats := modelStats[result.Model]
 		stats.TotalQueries++
+		// Requirement 3: Bad case definition
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			stats.BadCases++
 		}
@@ -328,7 +336,7 @@ func (rg *ReportGenerator) generateModelStats(results []QueryResult, config *Con
         <div class="model-stats">
             <strong>%s</strong><br>
             Total Queries: %d | Bad Cases: %d | Avg Error Ratio: %.2f | Avg Duration: %.2fms
-        </div>`, 
+        </div>`,
 			model, stats.TotalQueries, stats.BadCases, stats.AvgErrorRatio, stats.AvgDuration))
 	}
 
@@ -336,28 +344,29 @@ func (rg *ReportGenerator) generateModelStats(results []QueryResult, config *Con
 }
 
 // generateTableRows generates HTML table rows
-func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Config) string {
+func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Config, statsHealthy map[string]int) string {
 	var html strings.Builder
-	
+
 	for i, result := range results {
 		// Limit to top 100 results
 		if i >= 100 {
 			break
 		}
 
+		// Requirement 3: Bad case definition for highlighting
 		isRiskQuery := result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000
 		rowClass := ""
 		if isRiskQuery {
 			rowClass = `class="high-error"`
 		}
 
-		statsHealthy := rg.getStatsHealthyForModel(result.Model, config)
+		healthyVal := rg.getStatsHealthyForModel(result.Model, statsHealthy)
 		modifyRatio := rg.calculateModifyRatio(result.Model, config)
 
 		html.WriteString(fmt.Sprintf(`
                 <tr %s>
                     <td>%s</td>
-                    <td class="numeric-cell">%.3f</td>
+                    <td class="numeric-cell">%d</td>
                     <td class="numeric-cell">%.3f</td>
                     <td>%s</td>
                     <td class="numeric-cell">%.2f</td>
@@ -369,7 +378,7 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
                 </tr>`,
 			rowClass,
 			escapeHTML(result.Model),
-			statsHealthy,
+			healthyVal,
 			modifyRatio,
 			"",
 			result.EstimationErrorRatio,
@@ -384,47 +393,75 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
 	return html.String()
 }
 
-// getStatsHealthyForModel gets stats healthy ratio for a model
-func (rg *ReportGenerator) getStatsHealthyForModel(modelName string, config *Config) float64 {
-	// This is a simplified implementation
-	// In a real implementation, you would get this from the database
-	return 1.0
+// getStatsHealthyForModel gets stats healthy value for a model (table)
+// Requirement 1: Look up from the map fetched by SHOW STATS_HEALTHY
+func (rg *ReportGenerator) getStatsHealthyForModel(modelName string, statsHealthy map[string]int) int {
+	if val, ok := statsHealthy[modelName]; ok {
+		return val
+	}
+	// Return 100 by default if not found (assuming healthy) or 0 based on preference
+	return 100
 }
 
 // calculateModifyRatio calculates the modify ratio for a model
+// Requirement 2: Modify Ratio = insert_rows/params.rows + update_ratio + delete_ratio
 func (rg *ReportGenerator) calculateModifyRatio(modelName string, config *Config) float64 {
 	for _, model := range config.Models {
 		if model.Name == modelName {
+			params := model.Params
 			incremental := model.Incremental
 			if incremental == nil {
 				return 0.0
 			}
 
-			baseRows := getFloatValue(model.Params, "rows")
+			// Get base rows (default 1000 if 0 or missing)
+			baseRows := getFloatValue(params, "rows")
+			if baseRows == 0 {
+				baseRows = 1000
+			}
+
 			insertRows := getFloatValue(incremental, "insert_rows")
 			updateRatio := getFloatValue(incremental, "update_ratio")
 			deleteRatio := getFloatValue(incremental, "delete_ratio")
 
-			if baseRows > 0 {
-				return (insertRows/baseRows) + updateRatio + deleteRatio
-			}
+			// Formula: (insert_rows / params.rows) + update_ratio + delete_ratio
+			ratio := (insertRows / baseRows) + updateRatio + deleteRatio
+			return ratio
 		}
 	}
 	return 0.0
 }
 
 // GenerateJSONReport generates a JSON report from query results
-func (rg *ReportGenerator) GenerateJSONReport(results []QueryResult, filename string, config *Config) error {
+// Change: Added statsHealthy map[string]int parameter
+func (rg *ReportGenerator) GenerateJSONReport(results []QueryResult, filename string, config *Config, statsHealthy map[string]int) error {
+	type ExtendedQueryResult struct {
+		QueryResult
+		StatsHealthy int     `json:"stats_healthy"`
+		ModifyRatio  float64 `json:"modify_ratio"`
+		IsBadCase    bool    `json:"is_bad_case"`
+	}
+
+	extendedResults := make([]ExtendedQueryResult, len(results))
+	for i, r := range results {
+		extendedResults[i] = ExtendedQueryResult{
+			QueryResult:  r,
+			StatsHealthy: rg.getStatsHealthyForModel(r.Model, statsHealthy),
+			ModifyRatio:  rg.calculateModifyRatio(r.Model, config),
+			IsBadCase:    r.EstimationErrorRatio >= 10 && r.EstimationErrorValue >= 1000,
+		}
+	}
+
 	report := struct {
 		GeneratedAt   time.Time              `json:"generated_at"`
 		TotalQueries  int                    `json:"total_queries"`
-		Results       []QueryResult          `json:"results"`
+		Results       []ExtendedQueryResult  `json:"results"`
 		Summary       map[string]interface{} `json:"summary"`
 		Configuration *Config                `json:"configuration"`
 	}{
 		GeneratedAt:   time.Now(),
 		TotalQueries:  len(results),
-		Results:       results,
+		Results:       extendedResults,
 		Configuration: config,
 	}
 
@@ -462,6 +499,7 @@ func (rg *ReportGenerator) calculateSummaryStats(results []QueryResult) map[stri
 	var totalErrorRatio, totalErrorValue, totalDuration float64
 
 	for _, result := range results {
+		// Requirement 3: Bad Case
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			badCases++
 		}
@@ -473,12 +511,12 @@ func (rg *ReportGenerator) calculateSummaryStats(results []QueryResult) map[stri
 	successRate := float64(totalQueries-badCases) / float64(totalQueries) * 100
 
 	return map[string]interface{}{
-		"total_queries":           totalQueries,
-		"bad_cases":               badCases,
-		"success_rate":            successRate,
+		"total_queries":              totalQueries,
+		"bad_cases":                  badCases,
+		"success_rate":               successRate,
 		"avg_estimation_error_ratio": totalErrorRatio / float64(totalQueries),
 		"avg_estimation_error_value": totalErrorValue / float64(totalQueries),
-		"avg_duration_ms":         totalDuration / float64(totalQueries),
+		"avg_duration_ms":            totalDuration / float64(totalQueries),
 	}
 }
 
@@ -512,7 +550,7 @@ func (rg *ReportGenerator) DisplayTopQueries(results []QueryResult, count int) {
 		if len(query) > 80 {
 			query = query[:77] + "..."
 		}
-		
+
 		fmt.Printf("%-4d %-20s %-15.2f %-15.2f %-12.3f %s\n",
 			i+1,
 			result.Model,
@@ -522,55 +560,4 @@ func (rg *ReportGenerator) DisplayTopQueries(results []QueryResult, count int) {
 			query,
 		)
 	}
-}
-
-// Helper functions
-
-
-
-// ExportResultsForAnalysis exports results in a format suitable for further analysis
-func (rg *ReportGenerator) ExportResultsForAnalysis(results []QueryResult, filename string, config *Config) error {
-	// Create a more detailed export for analysis
-	type AnalysisRecord struct {
-		Timestamp              string  `json:"timestamp"`
-		Model                  string  `json:"model"`
-		QueryID                int     `json:"query_id"`
-		Query                  string  `json:"query"`
-		DurationMs             float64 `json:"duration_ms"`
-		EstimationErrorValue   float64 `json:"estimation_error_value"`
-		EstimationErrorRatio   float64 `json:"estimation_error_ratio"`
-		RiskOperatorsCount     int     `json:"risk_operators_count"`
-		IsRiskQuery            bool    `json:"is_risk_query"`
-		StatsHealthyRatio      float64 `json:"stats_healthy_ratio"`
-		ModifyRatio            float64 `json:"modify_ratio"`
-	}
-
-	records := make([]AnalysisRecord, len(results))
-	for i, result := range results {
-		records[i] = AnalysisRecord{
-			Timestamp:            time.Now().Format("2006-01-02 15:04:05"),
-			Model:                result.Model,
-			QueryID:              result.QueryID,
-			Query:                result.Query,
-			DurationMs:           result.DurationMs,
-			EstimationErrorValue: result.EstimationErrorValue,
-			EstimationErrorRatio: result.EstimationErrorRatio,
-			RiskOperatorsCount:   result.RiskOperatorsCount,
-			IsRiskQuery:          result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000,
-			StatsHealthyRatio:    rg.getStatsHealthyForModel(result.Model, config),
-			ModifyRatio:          rg.calculateModifyRatio(result.Model, config),
-		}
-	}
-
-	jsonData, err := json.MarshalIndent(records, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal analysis data: %v", err)
-	}
-
-	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
-		return fmt.Errorf("failed to write analysis file: %v", err)
-	}
-
-	fmt.Printf("Analysis export saved to: %s\n", filename)
-	return nil
 }

@@ -35,9 +35,9 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 
 	sqls := []string{fmt.Sprintf("-- Auto-generated for %s at %s", tableName, time.Now().Format("2006-01-02 15:04:05"))}
 
-	colInt := "col_int"
-	colStr := "col_varchar"
-	colDt := "col_datetime"
+	colInt := fmt.Sprintf("%s_int", tableName)
+	colStr := fmt.Sprintf("%s_varchar", tableName)
+	colDt := fmt.Sprintf("%s_datetime", tableName)
 
 	// Get integer range from current stats or config
 	var minInt, maxInt int

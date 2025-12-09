@@ -1,10 +1,14 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // ExternalBenchRunner runs external benchmark tools
@@ -17,6 +21,40 @@ func NewExternalBenchRunner(config DBConfig) *ExternalBenchRunner {
 	return &ExternalBenchRunner{config: config}
 }
 
+// resolveDBName determines the database name to use
+func (ebr *ExternalBenchRunner) resolveDBName(toolName string, params map[string]interface{}) string {
+	// 1. Try to get from params
+	if val, ok := params["db_name"]; ok {
+		return fmt.Sprintf("%v", val)
+	}
+	// 2. Default to tool name (e.g., "tpcc", "tpch") to ensure isolation
+	return toolName
+}
+
+// ensureDatabaseExists creates the database if it doesn't exist
+func (ebr *ExternalBenchRunner) ensureDatabaseExists(dbName string) error {
+	// Connect without selecting a database first
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?charset=%s",
+		ebr.config.User,
+		ebr.config.Password,
+		ebr.config.Host,
+		ebr.config.Port,
+		ebr.config.Charset)
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return fmt.Errorf("failed to connect to DB instance: %v", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", dbName))
+	if err != nil {
+		return fmt.Errorf("failed to create database %s: %v", dbName, err)
+	}
+
+	return nil
+}
+
 // PrepareData prepares data using external benchmark tool
 func (ebr *ExternalBenchRunner) PrepareData(modelConfig ModelConfig) {
 	modelType := modelConfig.Type
@@ -27,10 +65,19 @@ func (ebr *ExternalBenchRunner) PrepareData(modelConfig ModelConfig) {
 	toolName := strings.Replace(modelType, "external_", "", 1)
 	params := modelConfig.Params
 
-	fmt.Printf("\n[External] Executing PREPARE for %s...\n", toolName)
+	// Resolve DB name and ensure it exists
+	targetDB := ebr.resolveDBName(toolName, params)
+	if err := ebr.ensureDatabaseExists(targetDB); err != nil {
+		log.Printf("[External] Error creating database %s: %v", targetDB, err)
+		return
+	}
 
-	cmd := ebr.buildBaseCommand(toolName)
+	fmt.Printf("\n[External] Executing PREPARE for %s (DB: %s)...\n", toolName, targetDB)
+
+	cmd := ebr.buildBaseCommand(toolName, targetDB)
 	cmd = append(cmd, "prepare")
+	// Only add dropdata if we want to reset. Usually for prepare we might want it.
+	// But be careful, dropdata in tiup usually drops the tables in the target DB.
 	cmd = append(cmd, "--dropdata")
 
 	// Add tool-specific parameters
@@ -41,7 +88,7 @@ func (ebr *ExternalBenchRunner) PrepareData(modelConfig ModelConfig) {
 		}
 	case "tpch":
 		if scaleFactor, ok := params["scale_factor"].(float64); ok {
-			cmd = append(cmd, "--sf", fmt.Sprintf("%d", int(scaleFactor)))
+			cmd = append(cmd, "--sf", fmt.Sprintf("%.0f", scaleFactor))
 		}
 	}
 
@@ -65,9 +112,12 @@ func (ebr *ExternalBenchRunner) RunWorkload(modelConfig ModelConfig) {
 	baseParams := modelConfig.Params
 	incremental := modelConfig.Incremental
 
-	fmt.Printf("\n[External] Executing RUN (Incremental) for %s...\n", toolName)
+	// Resolve DB name (must match PrepareData)
+	targetDB := ebr.resolveDBName(toolName, baseParams)
 
-	cmd := ebr.buildBaseCommand(toolName)
+	fmt.Printf("\n[External] Executing RUN (Incremental) for %s (DB: %s)...\n", toolName, targetDB)
+
+	cmd := ebr.buildBaseCommand(toolName, targetDB)
 	cmd = append(cmd, "run")
 
 	// Add tool-specific base parameters
@@ -84,7 +134,7 @@ func (ebr *ExternalBenchRunner) RunWorkload(modelConfig ModelConfig) {
 		}
 	case "tpch":
 		if scaleFactor, ok := baseParams["scale_factor"].(float64); ok {
-			cmd = append(cmd, "--sf", fmt.Sprintf("%.1f", scaleFactor))
+			cmd = append(cmd, "--sf", fmt.Sprintf("%d", int(scaleFactor)))
 		}
 		if queries, ok := incremental["queries"].([]interface{}); ok {
 			queryStrings := make([]string, len(queries))
@@ -93,13 +143,20 @@ func (ebr *ExternalBenchRunner) RunWorkload(modelConfig ModelConfig) {
 			}
 			cmd = append(cmd, "--queries", strings.Join(queryStrings, ","))
 		}
+		if count, ok := incremental["count"].(float64); ok {
+			cmd = append(cmd, "--count", fmt.Sprintf("%.0f", count))
+		} else {
+			// Default to 1 if not specified
+			cmd = append(cmd, "--count", "1")
+		}
 	}
 
 	ebr.runCommand(cmd)
 }
 
 // buildBaseCommand builds the base command for tiup bench
-func (ebr *ExternalBenchRunner) buildBaseCommand(toolName string) []string {
+// Modified to accept targetDB explicitly
+func (ebr *ExternalBenchRunner) buildBaseCommand(toolName string, targetDB string) []string {
 	cmd := []string{
 		"tiup", "bench", toolName,
 		"--host", ebr.config.Host,
@@ -111,8 +168,9 @@ func (ebr *ExternalBenchRunner) buildBaseCommand(toolName string) []string {
 		cmd = append(cmd, "--password", ebr.config.Password)
 	}
 
-	if ebr.config.DBName != "" {
-		cmd = append(cmd, "--db", ebr.config.DBName)
+	// Use the specific target DB, not the global one
+	if targetDB != "" {
+		cmd = append(cmd, "--db", targetDB)
 	}
 
 	return cmd
@@ -130,17 +188,17 @@ func (ebr *ExternalBenchRunner) runCommand(cmd []string) {
 
 	// Create command
 	command := exec.Command(cmd[0], cmd[1:]...)
-	
+
 	// Set up output capture
 	output, err := command.CombinedOutput()
-	
+
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			fmt.Printf("  -> External command failed with exit code %d\n", exitError.ExitCode())
 		} else {
 			fmt.Printf("  -> External command failed: %v\n", err)
 		}
-		
+
 		if len(output) > 0 {
 			fmt.Printf("  Output: %s\n", string(output))
 		}
@@ -172,10 +230,10 @@ func (ebr *ExternalBenchRunner) GetTiUPVersion() (string, error) {
 // InstallTiUP installs TiUP if not available
 func (ebr *ExternalBenchRunner) InstallTiUP() error {
 	fmt.Println("Installing TiUP...")
-	
+
 	// Download and install script
 	installScript := `curl --proto '=https' --tlsv1.2 -sSf https://tiup-mirrors.pingcap.com/install.sh | sh`
-	
+
 	cmd := exec.Command("sh", "-c", installScript)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -190,7 +248,7 @@ func (ebr *ExternalBenchRunner) InstallTiUP() error {
 // InstallBenchComponent installs the bench component for TiUP
 func (ebr *ExternalBenchRunner) InstallBenchComponent() error {
 	fmt.Println("Installing TiUP bench component...")
-	
+
 	cmd := exec.Command("tiup", "install", "bench")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -205,12 +263,12 @@ func (ebr *ExternalBenchRunner) InstallBenchComponent() error {
 func (ebr *ExternalBenchRunner) RunCustomCommand(toolName string, args []string) error {
 	cmd := []string{"tiup", "bench", toolName}
 	cmd = append(cmd, args...)
-	
+
 	fmt.Printf("Running custom command: %s\n", strings.Join(cmd, " "))
-	
+
 	command := exec.Command(cmd[0], cmd[1:]...)
 	output, err := command.CombinedOutput()
-	
+
 	if err != nil {
 		return fmt.Errorf("custom command failed: %v\nOutput: %s", err, string(output))
 	}
@@ -236,7 +294,7 @@ func (ebr *ExternalBenchRunner) ValidateConfig(modelConfig ModelConfig) error {
 
 	toolName := strings.Replace(modelType, "external_", "", 1)
 	validTools := []string{"tpcc", "tpch"}
-	
+
 	found := false
 	for _, valid := range validTools {
 		if toolName == valid {
@@ -244,7 +302,7 @@ func (ebr *ExternalBenchRunner) ValidateConfig(modelConfig ModelConfig) error {
 			break
 		}
 	}
-	
+
 	if !found {
 		return fmt.Errorf("invalid external benchmark tool: %s. Valid tools are: %s", toolName, strings.Join(validTools, ", "))
 	}
@@ -371,9 +429,6 @@ func (ebr *ExternalBenchRunner) MonitorExecution(modelConfig ModelConfig, progre
 // Cleanup cleans up after external benchmark execution
 func (ebr *ExternalBenchRunner) Cleanup() error {
 	fmt.Println("Cleaning up external benchmark resources...")
-	
 	// Clean up any temporary files or resources
-	// This is a placeholder for cleanup operations
-	
 	return nil
 }

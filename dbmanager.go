@@ -5,8 +5,10 @@ import (
 	"encoding/csv"
 	"fmt"
 	"log"
+	"math" // [修复] 添加 math 包
 	"os"
 	"path/filepath"
+	"strconv" // [修复] 添加 strconv 包
 	"strings"
 	"time"
 
@@ -188,8 +190,7 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 		return
 	}
 
-	// Build the column list string, e.g., (`col_int`, `col_varchar`, `col_datetime`)
-	// This ensures we map the CSV columns to the correct table columns and skip 'id'
+	// Build the column list string
 	quotedCols := make([]string, len(header))
 	for i, col := range header {
 		quotedCols[i] = fmt.Sprintf("`%s`", strings.TrimSpace(col))
@@ -201,8 +202,6 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 	mysql.RegisterLocalFile(absPath)
 
 	// 2. Construct SQL
-	// - Changed ENCLOSED BY '"' to OPTIONALLY ENCLOSED BY '"' to support unquoted CSVs
-	// - Added columnListSql to explicitly map columns
 	sql := fmt.Sprintf(`LOAD DATA LOCAL INFILE '%s' INTO TABLE %s 
 		FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' 
 		LINES TERMINATED BY '\n' 
@@ -294,7 +293,29 @@ func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
 		return
 	}
 
+	// 临时调大当前 Session 的内存限制
+	_, err = dbm.db.Exec("SET tidb_mem_quota_query = 2 * 1024 * 1024 * 1024")
+	if err != nil {
+		fmt.Printf("    [Warning] Failed to increase memory quota: %v\n", err)
+	}
+
 	statements := strings.Split(string(content), ";")
+
+	// 分批事务控制
+	batchSize := 100 // 每 100 条 SQL 提交一次
+	var tx *sql.Tx
+
+	stmtCount := 0
+	totalCount := 0
+
+	commitTx := func() {
+		if tx != nil {
+			if err := tx.Commit(); err != nil {
+				log.Printf("Error committing transaction: %v", err)
+			}
+			tx = nil
+		}
+	}
 
 	for _, statement := range statements {
 		statement = strings.TrimSpace(statement)
@@ -302,11 +323,41 @@ func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
 			continue
 		}
 
-		_, err := dbm.db.Exec(statement)
+		// 如果没有开启事务，开启一个新的
+		if tx == nil {
+			var err error
+			tx, err = dbm.db.Begin()
+			if err != nil {
+				log.Printf("Error starting transaction: %v", err)
+				return
+			}
+		}
+
+		// 执行 SQL
+		_, err := tx.Exec(statement)
 		if err != nil {
-			fmt.Printf("      SQL Error: %v\n", err)
+			fmt.Printf("      SQL Error: %v\n      Statement partial: %s\n", err, truncateString(statement, 100))
+			// 遇到错误回滚当前批次并退出，或者选择继续
+			tx.Rollback()
+			tx = nil
+			continue
+		}
+
+		stmtCount++
+		totalCount++
+
+		// 达到批次大小，提交事务
+		if stmtCount >= batchSize {
+			commitTx()
+			stmtCount = 0
+			fmt.Printf("\r      Executed %d statements...", totalCount)
 		}
 	}
+
+	// 提交剩余的事务
+	commitTx()
+	fmt.Println()
+	fmt.Printf("    [DB] Finished executing %d statements.\n", totalCount)
 }
 
 // ExecuteAndExplain executes queries and returns results with explain plans
@@ -331,7 +382,7 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 			continue
 		}
 
-		// Execute query and measure time
+		// 1. Execute query to get Duration
 		start := time.Now()
 		rows, err := dbm.db.Query(query)
 		if err != nil {
@@ -339,38 +390,108 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 			queryID++
 			continue
 		}
-		rows.Close()
+		rows.Close() // We only need execution time, not data
 		duration := time.Since(start).Milliseconds()
 
-		// Get explain analyze
-		explainQuery := fmt.Sprintf("EXPLAIN analyze %s", query)
+		// 2. Run EXPLAIN ANALYZE to get Plan and Stats
+		explainQuery := fmt.Sprintf("EXPLAIN ANALYZE %s", query)
 		explainRows, err := dbm.db.Query(explainQuery)
 		if err != nil {
 			fmt.Printf("      Explain Error: %v\n", err)
 			queryID++
 			continue
 		}
-		defer explainRows.Close()
 
-		// Build explain result
-		explainResult := ""
-		for explainRows.Next() {
-			var row string
-			if err := explainRows.Scan(&row); err == nil {
-				explainResult += row + "\n"
+		// Get column names to map data correctly
+		columns, _ := explainRows.Columns()
+		count := len(columns)
+		values := make([]interface{}, count)
+		valuePtrs := make([]interface{}, count)
+
+		// Build Explain String and Calculate Errors
+		var sb strings.Builder
+
+		maxErrorRatio := 0.0
+		maxErrorValue := 0.0
+		riskCount := 0
+
+		// Find indices for estRows and actRows
+		estRowIdx := -1
+		actRowIdx := -1
+		for i, col := range columns {
+			valuePtrs[i] = &values[i]
+			if strings.EqualFold(col, "estRows") {
+				estRowIdx = i
+			}
+			if strings.EqualFold(col, "actRows") {
+				actRowIdx = i
 			}
 		}
 
-		// Parse explain analyze
-		estErrorValue, estErrorRatio, riskCount := dbm.parseExplainAnalyze(explainResult)
+		// Header for explain text
+		for i, col := range columns {
+			sb.WriteString(col)
+			if i < count-1 {
+				sb.WriteString("\t")
+			}
+		}
+		sb.WriteString("\n")
+
+		for explainRows.Next() {
+			err := explainRows.Scan(valuePtrs...)
+			if err != nil {
+				continue
+			}
+
+			// Append row to Explain String
+			for i, val := range values {
+				var v interface{}
+				b, ok := val.([]byte)
+				if ok {
+					v = string(b)
+				} else {
+					v = val
+				}
+				sb.WriteString(fmt.Sprintf("%v", v))
+				if i < count-1 {
+					sb.WriteString("\t")
+				}
+			}
+			sb.WriteString("\n")
+
+			// Calculate Error for this operator
+			if estRowIdx != -1 && actRowIdx != -1 {
+				est := dbm.toFloat(values[estRowIdx])
+				act := dbm.toFloat(values[actRowIdx])
+
+				// Logic: act = max(1, act), est = max(1, est)
+				act = math.Max(1.0, act)
+				est = math.Max(1.0, est)
+
+				errVal := math.Abs(act - est)
+				errRatio := math.Max(act, est) / math.Min(act, est)
+
+				// Check bad case condition
+				if errRatio >= 10 && errVal >= 1000 {
+					riskCount++
+					if errRatio > maxErrorRatio {
+						maxErrorRatio = errRatio
+						maxErrorValue = errVal
+					}
+				}
+			}
+		}
+		explainRows.Close()
+
+		explainResult := sb.String()
 
 		result := QueryResult{
 			QueryID:              queryID,
 			Query:                query,
 			DurationMs:           float64(duration),
 			Explain:              explainResult,
-			EstimationErrorValue: estErrorValue,
-			EstimationErrorRatio: estErrorRatio,
+			EstimationErrorValue: maxErrorValue,
+			EstimationErrorRatio: maxErrorRatio,
 			RiskOperatorsCount:   riskCount,
 		}
 		results = append(results, result)
@@ -380,60 +501,62 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 	return results
 }
 
-// parseExplainAnalyze parses EXPLAIN ANALYZE output
-func (dbm *DBManager) parseExplainAnalyze(explainText string) (float64, float64, int) {
-	// Simplified parsing - in real implementation would parse the actual explain output
-	lines := strings.Split(explainText, "\n")
-	operators := []map[string]interface{}{}
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "(") && strings.HasSuffix(line, ")") {
-			// Parse operator info (simplified)
-			operator := map[string]interface{}{
-				"est_rows": 100.0,
-				"act_rows": 110.0,
-			}
-
-			estRows := operator["est_rows"].(float64)
-			actRows := operator["act_rows"].(float64)
-
-			estErrorValue := estRows - actRows
-			if estErrorValue < 0 {
-				estErrorValue = -estErrorValue
-			}
-
-			estErrorRatio := maxFloat64(estRows, actRows) / minFloat64(estRows, actRows)
-			isRisk := estErrorRatio >= 10 && estErrorValue >= 1000
-
-			operator["estimation_error_value"] = estErrorValue
-			operator["estimation_error_ratio"] = estErrorRatio
-			operator["is_risk"] = isRisk
-
-			operators = append(operators, operator)
-		}
+// Helper to safely convert interface to float64
+func (dbm *DBManager) toFloat(val interface{}) float64 {
+	if val == nil {
+		return 0.0
 	}
-
-	if len(operators) == 0 {
-		return 0.0, 0.0, 0
+	switch v := val.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int:
+		return float64(v)
+	case []byte:
+		f, _ := strconv.ParseFloat(string(v), 64)
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(v, 64)
+		return f
+	default:
+		return 0.0
 	}
-
-	var totalErrorValue, totalErrorRatio float64
-	var riskCount int
-
-	for _, op := range operators {
-		totalErrorValue += op["estimation_error_value"].(float64)
-		totalErrorRatio += op["estimation_error_ratio"].(float64)
-		if op["is_risk"].(bool) {
-			riskCount++
-		}
-	}
-
-	avgErrorValue := totalErrorValue / float64(len(operators))
-	avgErrorRatio := totalErrorRatio / float64(len(operators))
-
-	return avgErrorValue, avgErrorRatio, riskCount
 }
+
+//// Helper to extract float value from string like "key:value"
+//func (dbm *DBManager) extractValue(line, key string) float64 {
+//	keyStr := key + ":"
+//	idx := strings.Index(line, keyStr)
+//	if idx == -1 {
+//		return 0.0
+//	}
+//
+//	start := idx + len(keyStr)
+//	end := start
+//	for end < len(line) {
+//		c := line[end]
+//		// consume number chars
+//		if (c >= '0' && c <= '9') || c == '.' {
+//			end++
+//		} else {
+//			break
+//		}
+//	}
+//
+//	if start == end {
+//		return 0.0
+//	}
+//
+//	valStr := line[start:end]
+//	val, err := strconv.ParseFloat(valStr, 64)
+//	if err != nil {
+//		return 0.0
+//	}
+//	return val
+//}
 
 // GetTableStats gets statistics for specified columns
 func (dbm *DBManager) GetTableStats(tableName string, columns []string) map[string]map[string]interface{} {
@@ -467,9 +590,10 @@ func (dbm *DBManager) GetTableStats(tableName string, columns []string) map[stri
 }
 
 // GetStatsHealthy gets stats healthy information for all tables
-func (dbm *DBManager) GetStatsHealthy() map[string]float64 {
+// Implements Requirement 1: Return map[string]int based on SHOW STATS_HEALTHY
+func (dbm *DBManager) GetStatsHealthy() map[string]int {
 	dbm.EnsureConnection()
-	statsHealthy := make(map[string]float64)
+	statsHealthy := make(map[string]int)
 
 	rows, err := dbm.db.Query("SHOW STATS_HEALTHY")
 	if err != nil {
@@ -478,21 +602,20 @@ func (dbm *DBManager) GetStatsHealthy() map[string]float64 {
 	}
 	defer rows.Close()
 
+	// Output format: Db_name | Table_name | Partition_name | Healthy
 	var dbName, tableName string
-	var healthy, healthyRatio float64
+	var healthy int
 
 	for rows.Next() {
-		err := rows.Scan(&dbName, &tableName, &healthy, &healthyRatio)
+		// [修复] 移除未使用的变量，直接 scan 到 sql.NullString 处理可能为 NULL 的 partition
+		var partName sql.NullString
+		err := rows.Scan(&dbName, &tableName, &partName, &healthy)
 		if err != nil {
 			continue
 		}
 
-		// Convert healthy to ratio (assuming healthy is percentage)
-		if healthy > 0 {
-			statsHealthy[tableName] = healthy / 100.0
-		} else {
-			statsHealthy[tableName] = 1.0
-		}
+		// Store healthy value (0-100)
+		statsHealthy[tableName] = healthy
 	}
 
 	return statsHealthy

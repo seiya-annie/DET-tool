@@ -95,6 +95,8 @@ func main() {
 	externalRunner := NewExternalBenchRunner(*dbConfig)
 	dataGenerator := NewDataGenerator()
 	queryBuilder := NewQueryBuilder()
+	// [新增] 初始化 ReportGenerator
+	reportGenerator := NewReportGenerator()
 
 	// Step 1: Base Data Generation
 	if genBase {
@@ -130,6 +132,8 @@ func main() {
 	// Step 2: Incremental Data Generation & Execution
 	if genInc {
 		fmt.Println("\n=== [Step 2] Incremental Data Update ===")
+		dbManager.InitDB(false)
+
 		sqlGenerator := NewSqlGenerator()
 		dataModifier := NewDataModifier(sqlGenerator)
 
@@ -168,7 +172,7 @@ func main() {
 		for _, model := range config.Models {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
-				cols := []string{"col_int", "col_datetime"}
+				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
 				stats := dbManager.GetTableStats(name, cols)
 
 				outfile := fmt.Sprintf("queries_%s.sql", name)
@@ -183,6 +187,7 @@ func main() {
 		fmt.Println("\n=== [Step 4] Execute Queries & Report ===")
 		dbManager.InitDB(false)
 
+		// [修改] 获取 Stats Healthy (现在返回 map[string]int)
 		statsHealthyInfo := dbManager.GetStatsHealthy()
 		fmt.Printf("Stats healthy info: %v\n", statsHealthyInfo)
 
@@ -204,15 +209,21 @@ func main() {
 			ts := time.Now().Format("20060102_150405")
 			csvName := fmt.Sprintf("report_execution_%s.csv", ts)
 			htmlName := fmt.Sprintf("report_execution_%s.html", ts)
+			jsonName := fmt.Sprintf("report_execution_%s.json", ts)
 
-			if err := generateCSVReport(report, csvName, config); err != nil {
+			// [修改] 使用 reportGenerator 并传入 statsHealthyInfo
+			if err := reportGenerator.GenerateCSVReport(report, csvName, config, statsHealthyInfo); err != nil {
 				log.Printf("Error generating CSV report: %v", err)
 			}
-			if err := generateHTMLReport(report, htmlName, config); err != nil {
+			if err := reportGenerator.GenerateHTMLReport(report, htmlName, config, statsHealthyInfo); err != nil {
 				log.Printf("Error generating HTML report: %v", err)
 			}
+			if err := reportGenerator.GenerateJSONReport(report, jsonName, config, statsHealthyInfo); err != nil {
+				log.Printf("Error generating JSON report: %v", err)
+			}
 
-			displayTopQueries(report)
+			// [修改] 使用 reportGenerator 的方法显示 Top Queries
+			reportGenerator.DisplayTopQueries(report, 10)
 		} else {
 			fmt.Println("No queries executed or no results found.")
 		}
@@ -263,157 +274,4 @@ func loadDataFrameFromCSV(path string) (*DataFrame, error) {
 	return LoadDataFrameFromCSV(path)
 }
 
-func generateCSVReport(report []QueryResult, filename string, config *Config) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	headers := []string{"Model", "stats_healthy_ratio", "modify_ratio", "query_label",
-		"estimation_error_ratio", "estimation_error_value", "query", "duration_ms",
-		"explain", "risk_operators_count"}
-
-	fmt.Fprintf(file, "%s\n", joinStrings(headers, ","))
-
-	for _, result := range report {
-		statsHealthy := getStatsHealthyForModel(result.Model, config)
-		modifyRatio := calculateModifyRatio(result.Model, config)
-
-		row := []string{
-			result.Model,
-			fmt.Sprintf("%.3f", statsHealthy),
-			fmt.Sprintf("%.3f", modifyRatio),
-			"",
-			fmt.Sprintf("%.2f", result.EstimationErrorRatio),
-			fmt.Sprintf("%.2f", result.EstimationErrorValue),
-			result.Query,
-			fmt.Sprintf("%.3f", result.DurationMs),
-			result.Explain,
-			fmt.Sprintf("%d", result.RiskOperatorsCount),
-		}
-		fmt.Fprintf(file, "%s\n", joinStrings(row, ","))
-	}
-
-	fmt.Printf("CSV Report saved to: %s\n", filename)
-	return nil
-}
-
-func generateHTMLReport(report []QueryResult, filename string, config *Config) error {
-	// 简化的HTML报告生成
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	htmlContent := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>Query Execution Report - %s</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        table { width: 100%%; border-collapse: collapse; margin-top: 20px; }
-        th, td { padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }
-        th { background-color: #4CAF50; color: white; }
-        tr:hover { background-color: #f5f5f5; }
-        .high-error { background-color: #ffebee !important; }
-    </style>
-</head>
-<body>
-    <h1>Query Execution Analysis Report</h1>
-    <p><strong>Report Generated:</strong> %s</p>
-    <p><strong>Total Queries:</strong> %d</p>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>Model</th>
-                <th>Estimation Error Ratio</th>
-                <th>Estimation Error Value</th>
-                <th>Duration (ms)</th>
-                <th>Query</th>
-            </tr>
-        </thead>
-        <tbody>`,
-		time.Now().Format("2006-01-02 15:04:05"),
-		time.Now().Format("2006-01-02 15:04:05"),
-		len(report))
-
-	for _, result := range report {
-		rowClass := ""
-		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
-			rowClass = "class=\"high-error\""
-		}
-
-		htmlContent += fmt.Sprintf(`
-            <tr %s>
-                <td>%s</td>
-                <td>%.2f</td>
-                <td>%.2f</td>
-                <td>%.3f</td>
-                <td>%s</td>
-            </tr>`,
-			rowClass,
-			result.Model,
-			result.EstimationErrorRatio,
-			result.EstimationErrorValue,
-			result.DurationMs,
-			escapeHTML(result.Query))
-	}
-
-	htmlContent += `
-        </tbody>
-    </table>
-</body>
-</html>`
-
-	fmt.Fprint(file, htmlContent)
-	fmt.Printf("HTML Report saved to: %s\n", filename)
-	return nil
-}
-
-func displayTopQueries(report []QueryResult) {
-	// 简单的排序显示前10个查询
-	fmt.Println("\nTop 10 queries by estimation error ratio:")
-	fmt.Printf("%-20s %-15s %-15s %-15s %s\n", "Model", "Error Ratio", "Error Value", "Duration (ms)", "Query")
-	fmt.Println(string(make([]byte, 120)))
-
-	// 这里应该按 estimation_error_ratio 排序，简化处理
-	for i, result := range report {
-		if i >= 10 {
-			break
-		}
-		fmt.Printf("%-20s %-15.2f %-15.2f %-15.3f %s\n",
-			result.Model,
-			result.EstimationErrorRatio,
-			result.EstimationErrorValue,
-			result.DurationMs,
-			truncateString(result.Query, 50))
-	}
-}
-
-func getStatsHealthyForModel(modelName string, config *Config) float64 {
-	// 简化实现
-	return 1.0
-}
-
-func calculateModifyRatio(modelName string, config *Config) float64 {
-	for _, model := range config.Models {
-		if model.Name == modelName {
-			params := model.Params
-			incremental := model.Incremental
-
-			baseRows := getFloatValue(params, "rows")
-			insertRows := getFloatValue(incremental, "insert_rows")
-			updateRatio := getFloatValue(incremental, "update_ratio")
-			deleteRatio := getFloatValue(incremental, "delete_ratio")
-
-			if baseRows > 0 {
-				return (insertRows / baseRows) + updateRatio + deleteRatio
-			}
-		}
-	}
-	return 0.0
-}
+// [已删除] 旧的生成报告辅助函数 (generateCSVReport, generateHTMLReport 等)，因为现在使用 reporter.go

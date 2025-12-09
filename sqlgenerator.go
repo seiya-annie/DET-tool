@@ -22,7 +22,7 @@ func NewSqlGenerator() *SqlGenerator {
 // LogDeleteLimit logs a DELETE statement with LIMIT
 func (sg *SqlGenerator) LogDeleteLimit(tableName string, limitCount int) {
 	if limitCount > 0 {
-		sg.statements = append(sg.statements, fmt.Sprintf("DELETE FROM `%s` LIMIT %d", tableName, limitCount))
+		sg.statements = append(sg.statements, fmt.Sprintf("DELETE FROM `%s` LIMIT %d;", tableName, limitCount))
 	}
 }
 
@@ -32,16 +32,16 @@ func (sg *SqlGenerator) LogUpdate(tableName string, idColumn string, ids []inter
 		if i >= len(values) {
 			break
 		}
-		
+
 		sets := []string{}
 		for j, colName := range columnNames {
 			if j < len(values[i]) {
 				sets = append(sets, fmt.Sprintf("`%s`=%s", colName, sg.formatValue(values[i][j])))
 			}
 		}
-		
+
 		if len(sets) > 0 {
-			sql := fmt.Sprintf("UPDATE `%s` SET %s WHERE `%s`=%s", 
+			sql := fmt.Sprintf("UPDATE `%s` SET %s WHERE `%s`=%s;",
 				tableName, strings.Join(sets, ", "), idColumn, sg.formatValue(id))
 			sg.statements = append(sg.statements, sql)
 		}
@@ -55,18 +55,18 @@ func (sg *SqlGenerator) LogInsert(tableName string, df *DataFrame) {
 	}
 
 	columns := strings.Join(df.columns, ", ")
-	
+
 	for _, row := range df.data {
 		if len(row) != len(df.columns) {
 			continue
 		}
-		
+
 		values := make([]string, len(row))
 		for i, val := range row {
 			values[i] = sg.formatValue(val)
 		}
-		
-		sql := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)", 
+
+		sql := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s);",
 			tableName, columns, strings.Join(values, ", "))
 		sg.statements = append(sg.statements, sql)
 	}
@@ -83,29 +83,29 @@ func (sg *SqlGenerator) LogInsertBatch(tableName string, df *DataFrame, batchSiz
 	}
 
 	columns := strings.Join(df.columns, ", ")
-	
+
 	for i := 0; i < len(df.data); i += batchSize {
 		end := i + batchSize
 		if end > len(df.data) {
 			end = len(df.data)
 		}
-		
+
 		valueGroups := []string{}
 		for j := i; j < end; j++ {
 			row := df.data[j]
 			if len(row) != len(df.columns) {
 				continue
 			}
-			
+
 			values := make([]string, len(row))
 			for k, val := range row {
 				values[k] = sg.formatValue(val)
 			}
 			valueGroups = append(valueGroups, fmt.Sprintf("(%s)", strings.Join(values, ", ")))
 		}
-		
+
 		if len(valueGroups) > 0 {
-			sql := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES %s", 
+			sql := fmt.Sprintf("INSERT INTO `%s` (%s) VALUES %s;",
 				tableName, columns, strings.Join(valueGroups, ", "))
 			sg.statements = append(sg.statements, sql)
 		}
@@ -120,7 +120,7 @@ func (sg *SqlGenerator) LogCreateTable(tableName string, df *DataFrame) {
 
 	columns := []string{"`id` bigint NOT NULL AUTO_INCREMENT"}
 	indexes := []string{}
-	
+
 	for _, colName := range df.columns {
 		sqlType := sg.inferSQLType(df, colName)
 		columns = append(columns, fmt.Sprintf("`%s` %s", colName, sqlType))
@@ -130,9 +130,9 @@ func (sg *SqlGenerator) LogCreateTable(tableName string, df *DataFrame) {
 	createSQL := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
 		%s,
 		%s,
-		PRIMARY KEY (` + "`id`" + `)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`, 
-		tableName, 
+		PRIMARY KEY (`+"`id`"+`)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
+		tableName,
 		strings.Join(columns, ", "),
 		strings.Join(indexes, ", "))
 
@@ -148,7 +148,7 @@ func (sg *SqlGenerator) LogCreateIndex(tableName string, columns []string, index
 
 	indexName := fmt.Sprintf("idx_%s_%s", tableName, strings.Join(columns, "_"))
 	columnList := strings.Join(columns, ", ")
-	
+
 	var sql string
 	switch strings.ToUpper(indexType) {
 	case "UNIQUE":
@@ -158,7 +158,7 @@ func (sg *SqlGenerator) LogCreateIndex(tableName string, columns []string, index
 	default:
 		sql = fmt.Sprintf("CREATE INDEX `%s` ON `%s` (%s)", indexName, tableName, columnList)
 	}
-	
+
 	sg.statements = append(sg.statements, sql)
 }
 
@@ -302,8 +302,6 @@ func (sg *SqlGenerator) inferSQLType(df *DataFrame, colName string) string {
 
 // Helper functions
 
-
-
 // GenerateInsertFromMap generates INSERT statement from map
 func (sg *SqlGenerator) GenerateInsertFromMap(tableName string, data map[string]interface{}) string {
 	if len(data) == 0 {
@@ -318,7 +316,7 @@ func (sg *SqlGenerator) GenerateInsertFromMap(tableName string, data map[string]
 		values = append(values, sg.formatValue(val))
 	}
 
-	return fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)", 
+	return fmt.Sprintf("INSERT INTO `%s` (%s) VALUES (%s)",
 		tableName, strings.Join(columns, ", "), strings.Join(values, ", "))
 }
 
@@ -333,7 +331,7 @@ func (sg *SqlGenerator) GenerateUpdateFromMap(tableName string, data map[string]
 		sets = append(sets, fmt.Sprintf("`%s`=%s", col, sg.formatValue(val)))
 	}
 
-	return fmt.Sprintf("UPDATE `%s` SET %s WHERE %s", 
+	return fmt.Sprintf("UPDATE `%s` SET %s WHERE %s",
 		tableName, strings.Join(sets, ", "), whereClause)
 }
 
@@ -351,15 +349,15 @@ func (sg *SqlGenerator) GenerateSelect(tableName string, columns []string, where
 	}
 
 	sql := fmt.Sprintf("SELECT %s FROM `%s`", columnList, tableName)
-	
+
 	if whereClause != "" {
 		sql += fmt.Sprintf(" WHERE %s", whereClause)
 	}
-	
+
 	if orderBy != "" {
 		sql += fmt.Sprintf(" ORDER BY %s", orderBy)
 	}
-	
+
 	if limit > 0 {
 		sql += fmt.Sprintf(" LIMIT %d", limit)
 	}
