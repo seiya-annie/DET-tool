@@ -390,10 +390,10 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 			queryID++
 			continue
 		}
-		rows.Close() // We only need execution time, not data
+		rows.Close()
 		duration := time.Since(start).Milliseconds()
 
-		// 2. Run EXPLAIN ANALYZE to get Plan and Stats
+		// 2. Run EXPLAIN ANALYZE
 		explainQuery := fmt.Sprintf("EXPLAIN ANALYZE %s", query)
 		explainRows, err := dbm.db.Query(explainQuery)
 		if err != nil {
@@ -402,22 +402,20 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 			continue
 		}
 
-		// Get column names to map data correctly
 		columns, _ := explainRows.Columns()
 		count := len(columns)
 		values := make([]interface{}, count)
 		valuePtrs := make([]interface{}, count)
 
-		// Build Explain String and Calculate Errors
 		var sb strings.Builder
 
 		maxErrorRatio := 0.0
 		maxErrorValue := 0.0
 		riskCount := 0
 
-		// Find indices for estRows and actRows
 		estRowIdx := -1
 		actRowIdx := -1
+		// Find indices
 		for i, col := range columns {
 			valuePtrs[i] = &values[i]
 			if strings.EqualFold(col, "estRows") {
@@ -428,7 +426,7 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 			}
 		}
 
-		// Header for explain text
+		// Write Header
 		for i, col := range columns {
 			sb.WriteString(col)
 			if i < count-1 {
@@ -443,7 +441,7 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 				continue
 			}
 
-			// Append row to Explain String
+			// Build Explain String
 			for i, val := range values {
 				var v interface{}
 				b, ok := val.([]byte)
@@ -459,37 +457,36 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 			}
 			sb.WriteString("\n")
 
-			// Calculate Error for this operator
+			// Calculate Error
 			if estRowIdx != -1 && actRowIdx != -1 {
 				est := dbm.toFloat(values[estRowIdx])
 				act := dbm.toFloat(values[actRowIdx])
 
-				// Logic: act = max(1, act), est = max(1, est)
 				act = math.Max(1.0, act)
 				est = math.Max(1.0, est)
 
 				errVal := math.Abs(act - est)
 				errRatio := math.Max(act, est) / math.Min(act, est)
 
-				// Check bad case condition
+				// [修复点 1]：无论是否是 Risk SQL，都记录当前查询中最大的误差值
+				if errRatio > maxErrorRatio {
+					maxErrorRatio = errRatio
+					maxErrorValue = errVal
+				}
+
+				// [修复点 2]：只有满足阈值时，才计入 Risk Count
 				if errRatio >= 10 && errVal >= 1000 {
 					riskCount++
-					if errRatio > maxErrorRatio {
-						maxErrorRatio = errRatio
-						maxErrorValue = errVal
-					}
 				}
 			}
 		}
 		explainRows.Close()
 
-		explainResult := sb.String()
-
 		result := QueryResult{
 			QueryID:              queryID,
 			Query:                query,
 			DurationMs:           float64(duration),
-			Explain:              explainResult,
+			Explain:              sb.String(), // 包含完整换行的字符串
 			EstimationErrorValue: maxErrorValue,
 			EstimationErrorRatio: maxErrorRatio,
 			RiskOperatorsCount:   riskCount,

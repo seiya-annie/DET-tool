@@ -18,8 +18,18 @@ func NewReportGenerator() *ReportGenerator {
 	return &ReportGenerator{}
 }
 
+// Helper to sort results by EstimationErrorRatio descending
+func (rg *ReportGenerator) sortResults(results []QueryResult) []QueryResult {
+	sorted := make([]QueryResult, len(results))
+	copy(sorted, results)
+	sort.Slice(sorted, func(i, j int) bool {
+		// 降序排列: Ratio 大的在前
+		return sorted[i].EstimationErrorRatio > sorted[j].EstimationErrorRatio
+	})
+	return sorted
+}
+
 // GenerateCSVReport generates a CSV report from query results
-// Change: Added statsHealthy map[string]int parameter
 func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename string, config *Config, statsHealthy map[string]int) error {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -41,15 +51,17 @@ func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename str
 		return fmt.Errorf("failed to write CSV header: %v", err)
 	}
 
+	// [修改] 排序结果
+	sortedResults := rg.sortResults(results)
+
 	// Write data rows
-	for _, result := range results {
-		// Use the map to get healthy value
+	for _, result := range sortedResults {
 		healthyVal := rg.getStatsHealthyForModel(result.Model, statsHealthy)
 		modifyRatio := rg.calculateModifyRatio(result.Model, config)
 
 		row := []string{
 			result.Model,
-			fmt.Sprintf("%d", healthyVal), // Integer 0-100
+			fmt.Sprintf("%d", healthyVal),
 			fmt.Sprintf("%.3f", modifyRatio),
 			"", // query_label
 			fmt.Sprintf("%.2f", result.EstimationErrorRatio),
@@ -70,7 +82,6 @@ func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename str
 }
 
 // GenerateHTMLReport generates an HTML report from query results
-// Change: Added statsHealthy map[string]int parameter
 func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename string, config *Config, statsHealthy map[string]int) error {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -82,18 +93,13 @@ func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename st
 	totalQueries := len(results)
 	badCases := 0
 	for _, result := range results {
-		// Rule: err_ratio >= 10 && err_val >= 1000
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			badCases++
 		}
 	}
 
-	// Sort results by estimation error ratio (descending)
-	sortedResults := make([]QueryResult, len(results))
-	copy(sortedResults, results)
-	sort.Slice(sortedResults, func(i, j int) bool {
-		return sortedResults[i].EstimationErrorRatio > sortedResults[j].EstimationErrorRatio
-	})
+	// [修改] 使用统一的排序函数
+	sortedResults := rg.sortResults(results)
 
 	// Generate HTML content
 	htmlContent := rg.generateHTMLContent(sortedResults, config, totalQueries, badCases, statsHealthy)
@@ -110,9 +116,6 @@ func (rg *ReportGenerator) GenerateHTMLReport(results []QueryResult, filename st
 func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Config, totalQueries, badCases int, statsHealthy map[string]int) string {
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
 
-	// Fixed Template:
-	// 1. Used 100%% for CSS width
-	// 2. Ensured %s placeholders are in correct positions
 	htmlTemplate := `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -126,7 +129,8 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             background-color: #f5f5f5; 
         }
         .container { 
-            max-width: 1400px; 
+            width: 95%%; 
+            max-width: 1800px; 
             margin: 0 auto; 
             background-color: white; 
             padding: 20px; 
@@ -149,7 +153,6 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             border-collapse: collapse; 
             margin-top: 20px; 
             font-size: 12px; 
-            table-layout: fixed; /* Added for better overflow handling */
         }
         th { 
             background-color: #4CAF50; 
@@ -160,13 +163,12 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             position: sticky; 
             top: 0; 
             z-index: 10; 
+            white-space: nowrap; 
         }
         td { 
             padding: 8px; 
             border-bottom: 1px solid #ddd; 
             vertical-align: top; 
-            overflow: hidden; /* Added */
-            text-overflow: ellipsis; /* Added */
         }
         tr:nth-child(even) { 
             background-color: #f9f9f9; 
@@ -180,23 +182,30 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             font-weight: bold; 
         }
         .query-cell { 
-            width: 20%%;
+            width: 20%%;          
             word-wrap: break-word; 
-            font-family: 'Courier New', monospace; 
+            word-break: break-all; 
+            font-family: 'Consolas', 'Monaco', monospace; 
             font-size: 11px; 
         }
         .explain-cell { 
-            width: 30%%;
-            word-wrap: break-word; 
-            font-family: 'Courier New', monospace; 
-            font-size: 10px; 
-            color: #666; 
+            width: 40%%;           
+            min-width: 400px;      
+            max-width: 800px;      
+            font-family: 'Consolas', 'Monaco', monospace; 
+            font-size: 11px; 
+            color: #333; 
             white-space: pre-wrap; 
-            overflow-x: auto; /* Allow horizontal scroll for explain */
+            word-wrap: break-word; 
+            word-break: break-all; 
+            background-color: #f8f9fa;
+            padding: 8px;
+            border: 1px solid #eee;
+            border-radius: 4px;
         }
         .numeric-cell { 
             text-align: left; 
-            font-family: 'Courier New', monospace; 
+            font-family: 'Consolas', 'Monaco', monospace; 
         }
         .stats { 
             display: flex; 
@@ -287,16 +296,15 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
 		successRate = float64(totalQueries-badCases) / float64(totalQueries) * 100.0
 	}
 
-	// 确保参数顺序和类型与 % 占位符严格对应
 	return fmt.Sprintf(htmlTemplate,
-		currentTime,  // Title %s
-		currentTime,  // Report Generated %s
-		totalQueries, // Total Queries %d
-		totalQueries, // Stat Box Total %d
-		badCases,     // Stat Box Bad %d
-		successRate,  // Stat Box Success %.1f
-		modelStats,   // Model Stats Div %s
-		tableRows) // Table Body %s
+		currentTime,
+		currentTime,
+		totalQueries,
+		totalQueries,
+		badCases,
+		successRate,
+		modelStats,
+		tableRows)
 }
 
 // generateModelStats generates statistics by model
@@ -309,11 +317,9 @@ func (rg *ReportGenerator) generateModelStats(results []QueryResult, config *Con
 		AvgDuration   float64
 	})
 
-	// Aggregate statistics by model
 	for _, result := range results {
 		stats := modelStats[result.Model]
 		stats.TotalQueries++
-		// Requirement 3: Bad case definition
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			stats.BadCases++
 		}
@@ -323,7 +329,6 @@ func (rg *ReportGenerator) generateModelStats(results []QueryResult, config *Con
 		modelStats[result.Model] = stats
 	}
 
-	// Calculate averages
 	var html strings.Builder
 	for model, stats := range modelStats {
 		if stats.TotalQueries > 0 {
@@ -348,12 +353,10 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
 	var html strings.Builder
 
 	for i, result := range results {
-		// Limit to top 100 results
-		if i >= 100 {
+		if i >= 500 {
 			break
 		}
 
-		// Requirement 3: Bad case definition for highlighting
 		isRiskQuery := result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000
 		rowClass := ""
 		if isRiskQuery {
@@ -385,7 +388,7 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
 			result.EstimationErrorValue,
 			escapeHTML(truncateString(result.Query, 200)),
 			result.DurationMs,
-			escapeHTML(truncateString(result.Explain, 500)),
+			escapeHTML(result.Explain),
 			result.RiskOperatorsCount,
 		))
 	}
@@ -393,18 +396,15 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
 	return html.String()
 }
 
-// getStatsHealthyForModel gets stats healthy value for a model (table)
-// Requirement 1: Look up from the map fetched by SHOW STATS_HEALTHY
+// getStatsHealthyForModel gets stats healthy value for a model
 func (rg *ReportGenerator) getStatsHealthyForModel(modelName string, statsHealthy map[string]int) int {
 	if val, ok := statsHealthy[modelName]; ok {
 		return val
 	}
-	// Return 100 by default if not found (assuming healthy) or 0 based on preference
 	return 100
 }
 
 // calculateModifyRatio calculates the modify ratio for a model
-// Requirement 2: Modify Ratio = insert_rows/params.rows + update_ratio + delete_ratio
 func (rg *ReportGenerator) calculateModifyRatio(modelName string, config *Config) float64 {
 	for _, model := range config.Models {
 		if model.Name == modelName {
@@ -414,7 +414,6 @@ func (rg *ReportGenerator) calculateModifyRatio(modelName string, config *Config
 				return 0.0
 			}
 
-			// Get base rows (default 1000 if 0 or missing)
 			baseRows := getFloatValue(params, "rows")
 			if baseRows == 0 {
 				baseRows = 1000
@@ -424,16 +423,13 @@ func (rg *ReportGenerator) calculateModifyRatio(modelName string, config *Config
 			updateRatio := getFloatValue(incremental, "update_ratio")
 			deleteRatio := getFloatValue(incremental, "delete_ratio")
 
-			// Formula: (insert_rows / params.rows) + update_ratio + delete_ratio
-			ratio := (insertRows / baseRows) + updateRatio + deleteRatio
-			return ratio
+			return (insertRows / baseRows) + updateRatio + deleteRatio
 		}
 	}
 	return 0.0
 }
 
 // GenerateJSONReport generates a JSON report from query results
-// Change: Added statsHealthy map[string]int parameter
 func (rg *ReportGenerator) GenerateJSONReport(results []QueryResult, filename string, config *Config, statsHealthy map[string]int) error {
 	type ExtendedQueryResult struct {
 		QueryResult
@@ -442,8 +438,11 @@ func (rg *ReportGenerator) GenerateJSONReport(results []QueryResult, filename st
 		IsBadCase    bool    `json:"is_bad_case"`
 	}
 
-	extendedResults := make([]ExtendedQueryResult, len(results))
-	for i, r := range results {
+	// [修改] 排序结果
+	sortedResults := rg.sortResults(results)
+
+	extendedResults := make([]ExtendedQueryResult, len(sortedResults))
+	for i, r := range sortedResults {
 		extendedResults[i] = ExtendedQueryResult{
 			QueryResult:  r,
 			StatsHealthy: rg.getStatsHealthyForModel(r.Model, statsHealthy),
@@ -465,17 +464,14 @@ func (rg *ReportGenerator) GenerateJSONReport(results []QueryResult, filename st
 		Configuration: config,
 	}
 
-	// Calculate summary statistics
 	summary := rg.calculateSummaryStats(results)
 	report.Summary = summary
 
-	// Marshal to JSON
 	jsonData, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal JSON: %v", err)
 	}
 
-	// Write to file
 	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
 		return fmt.Errorf("failed to write JSON file: %v", err)
 	}
@@ -484,7 +480,6 @@ func (rg *ReportGenerator) GenerateJSONReport(results []QueryResult, filename st
 	return nil
 }
 
-// calculateSummaryStats calculates summary statistics
 func (rg *ReportGenerator) calculateSummaryStats(results []QueryResult) map[string]interface{} {
 	if len(results) == 0 {
 		return map[string]interface{}{
@@ -499,7 +494,6 @@ func (rg *ReportGenerator) calculateSummaryStats(results []QueryResult) map[stri
 	var totalErrorRatio, totalErrorValue, totalDuration float64
 
 	for _, result := range results {
-		// Requirement 3: Bad Case
 		if result.EstimationErrorRatio >= 10 && result.EstimationErrorValue >= 1000 {
 			badCases++
 		}
@@ -520,7 +514,6 @@ func (rg *ReportGenerator) calculateSummaryStats(results []QueryResult) map[stri
 	}
 }
 
-// DisplayTopQueries displays top queries by estimation error
 func (rg *ReportGenerator) DisplayTopQueries(results []QueryResult, count int) {
 	if count <= 0 {
 		count = 10
@@ -531,19 +524,13 @@ func (rg *ReportGenerator) DisplayTopQueries(results []QueryResult, count int) {
 		return
 	}
 
-	// Sort by estimation error ratio
-	sorted := make([]QueryResult, len(results))
-	copy(sorted, results)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].EstimationErrorRatio > sorted[j].EstimationErrorRatio
-	})
+	// [修改] 使用统一的排序函数
+	sorted := rg.sortResults(results)
 
-	// Display header
 	fmt.Printf("\n=== Top %d Queries by Estimation Error Ratio ===\n", count)
 	fmt.Printf("%-4s %-20s %-15s %-15s %-12s %s\n", "Rank", "Model", "Error Ratio", "Error Value", "Duration(ms)", "Query")
 	fmt.Println(strings.Repeat("-", 120))
 
-	// Display top queries
 	for i := 0; i < count && i < len(sorted); i++ {
 		result := sorted[i]
 		query := result.Query
