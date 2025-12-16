@@ -20,13 +20,19 @@ func NewReportGenerator() *ReportGenerator {
 
 // Helper to sort results by EstimationErrorRatio descending
 func (rg *ReportGenerator) sortResults(results []QueryResult) []QueryResult {
-	sorted := make([]QueryResult, len(results))
-	copy(sorted, results)
-	sort.Slice(sorted, func(i, j int) bool {
-		// 降序排列: Ratio 大的在前
-		return sorted[i].EstimationErrorRatio > sorted[j].EstimationErrorRatio
-	})
-	return sorted
+    sorted := make([]QueryResult, len(results))
+    copy(sorted, results)
+    sort.Slice(sorted, func(i, j int) bool {
+        // 先按是否 Bad Case 分组（Bad 在前），再按 EstimationErrorRatio 降序
+        isBadI := sorted[i].EstimationErrorRatio >= 10 && sorted[i].EstimationErrorValue >= 1000
+        isBadJ := sorted[j].EstimationErrorRatio >= 10 && sorted[j].EstimationErrorValue >= 1000
+        if isBadI != isBadJ {
+            return isBadI // true 在前
+        }
+        // 同组内按 Ratio 降序
+        return sorted[i].EstimationErrorRatio > sorted[j].EstimationErrorRatio
+    })
+    return sorted
 }
 
 // GenerateCSVReport generates a CSV report from query results
@@ -41,11 +47,11 @@ func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename str
 	defer writer.Flush()
 
 	// Write header
-	headers := []string{
-		"Model", "Stats Healthy", "Modify Ratio", "Query Label",
-		"Est Error Ratio", "Est Error Value", "Query SQL", "Duration (ms)",
-		"Explain Plan", "Risk Operators Count",
-	}
+    headers := []string{
+        "Model", "Stats Healthy", "Modify Ratio", "Query Label",
+        "Est Error Ratio", "Est Error Value", "Query SQL", "Duration (ms)",
+        "Explain Plan", "Risk Operators Count",
+    }
 
 	if err := writer.Write(headers); err != nil {
 		return fmt.Errorf("failed to write CSV header: %v", err)
@@ -59,18 +65,18 @@ func (rg *ReportGenerator) GenerateCSVReport(results []QueryResult, filename str
 		healthyVal := rg.getStatsHealthyForModel(result.Model, statsHealthy)
 		modifyRatio := rg.calculateModifyRatio(result.Model, config)
 
-		row := []string{
-			result.Model,
-			fmt.Sprintf("%d", healthyVal),
-			fmt.Sprintf("%.3f", modifyRatio),
-			"", // query_label
-			fmt.Sprintf("%.2f", result.EstimationErrorRatio),
-			fmt.Sprintf("%.2f", result.EstimationErrorValue),
-			result.Query,
-			fmt.Sprintf("%.3f", result.DurationMs),
-			result.Explain,
-			fmt.Sprintf("%d", result.RiskOperatorsCount),
-		}
+        row := []string{
+            result.Model,
+            fmt.Sprintf("%d", healthyVal),
+            fmt.Sprintf("%.3f", modifyRatio),
+            result.QueryLabel,
+            fmt.Sprintf("%.2f", result.EstimationErrorRatio),
+            fmt.Sprintf("%.2f", result.EstimationErrorValue),
+            result.Query,
+            fmt.Sprintf("%.3f", result.DurationMs),
+            result.Explain,
+            fmt.Sprintf("%d", result.RiskOperatorsCount),
+        }
 
 		if err := writer.Write(row); err != nil {
 			return fmt.Errorf("failed to write CSV row: %v", err)
@@ -202,6 +208,13 @@ func (rg *ReportGenerator) generateHTMLContent(results []QueryResult, config *Co
             padding: 8px;
             border: 1px solid #eee;
             border-radius: 4px;
+        }
+        .label-cell {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            white-space: normal;
+            word-wrap: break-word;
+            word-break: break-word;
         }
         .numeric-cell { 
             text-align: left; 
@@ -371,7 +384,7 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
                     <td>%s</td>
                     <td class="numeric-cell">%d</td>
                     <td class="numeric-cell">%.3f</td>
-                    <td>%s</td>
+                    <td class="label-cell">%s</td>
                     <td class="numeric-cell">%.2f</td>
                     <td class="numeric-cell">%.2f</td>
                     <td class="query-cell">%s</td>
@@ -379,16 +392,16 @@ func (rg *ReportGenerator) generateTableRows(results []QueryResult, config *Conf
                     <td class="explain-cell">%s</td>
                     <td class="numeric-cell">%d</td>
                 </tr>`,
-			rowClass,
-			escapeHTML(result.Model),
-			healthyVal,
-			modifyRatio,
-			"",
-			result.EstimationErrorRatio,
-			result.EstimationErrorValue,
-			escapeHTML(truncateString(result.Query, 200)),
-			result.DurationMs,
-			escapeHTML(result.Explain),
+            rowClass,
+            escapeHTML(result.Model),
+            healthyVal,
+            modifyRatio,
+            escapeHTML(result.QueryLabel),
+            result.EstimationErrorRatio,
+            result.EstimationErrorValue,
+            escapeHTML(truncateString(result.Query, 200)),
+            result.DurationMs,
+            escapeHTML(result.Explain),
 			result.RiskOperatorsCount,
 		))
 	}

@@ -1,9 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"html"
-	"strings"
+    "fmt"
+    "html"
+    "strings"
 )
 
 // Helper functions that are used across multiple files
@@ -141,7 +141,61 @@ func parseIntValue(val interface{}) int {
 }
 
 func must(err error, msg ...string) {
-	if err != nil {
-		panic(fmt.Sprintf("%s: %s", strings.Join(msg, " "), err))
-	}
+    if err != nil {
+        panic(fmt.Sprintf("%s: %s", strings.Join(msg, " "), err))
+    }
+}
+
+// extractQueryLabel parses SQL and extracts a query label if present.
+// Supports formats like: "/* LABEL: out of bound */ SELECT ..." or "-- LABEL: out of bound" in-line.
+func extractQueryLabel(sql string) string {
+    s := strings.TrimSpace(sql)
+    upper := strings.ToUpper(s)
+
+    // 1) Prefer leading block comment: /* LABEL: ... */
+    if strings.HasPrefix(upper, "/*") {
+        if end := strings.Index(upper, "*/"); end > 2 {
+            head := strings.TrimSpace(s[2:end])
+            uhead := strings.ToUpper(head)
+            const key = "LABEL:"
+            if idx := strings.Index(uhead, key); idx >= 0 {
+                label := strings.TrimSpace(head[idx+len(key):])
+                label = strings.Trim(label, " -*\t\n")
+                return label
+            }
+        }
+    }
+
+    // 2) First-line line-comment style: -- LABEL: ...
+    if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+        first := strings.TrimSpace(s[:nl])
+        ufirst := strings.ToUpper(first)
+        if strings.HasPrefix(ufirst, "--") || strings.HasPrefix(ufirst, "#") {
+            const key = "LABEL:"
+            if idx := strings.Index(ufirst, key); idx >= 0 {
+                label := strings.TrimSpace(first[idx+len(key):])
+                label = strings.Trim(label, " -*\t\n")
+                return label
+            }
+        }
+    }
+
+    // 3) Fallback: search for /* LABEL: ... */ anywhere
+    if idx := strings.Index(upper, "/* LABEL:"); idx >= 0 {
+        rest := s[idx+2:]
+        urest := strings.ToUpper(rest)
+        if j := strings.Index(urest, "LABEL:"); j >= 0 {
+            after := rest[j+len("LABEL:"):]
+            if k := strings.Index(after, "*/"); k >= 0 {
+                after = after[:k]
+            }
+            label := strings.TrimSpace(after)
+            label = strings.Trim(label, " -*\t\n")
+            if label != "" {
+                return label
+            }
+        }
+    }
+
+    return ""
 }

@@ -17,15 +17,39 @@ import (
 
 // DBManager manages database operations
 type DBManager struct {
-	config DBConfig
-	db     *sql.DB
+    config DBConfig
+    db     *sql.DB
+    analyzeMaxRetries int
+    analyzeInterval   time.Duration
 }
 
 // NewDBManager creates a new DBManager instance
 func NewDBManager(config DBConfig) *DBManager {
-	dbManager := &DBManager{config: config}
-	dbManager.connect()
-	return dbManager
+    dbManager := &DBManager{config: config}
+    dbManager.connect()
+    return dbManager
+}
+
+// SetAnalyzeWaitPolicy sets waiting policy for stats healthy after ANALYZE
+func (dbm *DBManager) SetAnalyzeWaitPolicy(maxRetries int, interval time.Duration) {
+    if maxRetries > 0 {
+        dbm.analyzeMaxRetries = maxRetries
+    }
+    if interval > 0 {
+        dbm.analyzeInterval = interval
+    }
+}
+
+func (dbm *DBManager) getAnalyzeParams() (int, time.Duration) {
+    retries := dbm.analyzeMaxRetries
+    if retries <= 0 {
+        retries = 20
+    }
+    interval := dbm.analyzeInterval
+    if interval <= 0 {
+        interval = 1 * time.Second
+    }
+    return retries, interval
 }
 
 // connect establishes database connection
@@ -225,26 +249,108 @@ func (dbm *DBManager) LoadDataInfile(tableName string, csvPath string) {
 
 // GetSingleTableHealth gets stats health for a specific table
 func (dbm *DBManager) GetSingleTableHealth(tableName string) int {
-	dbName := dbm.config.DBName
+    dbName := dbm.config.DBName
 
-	query := fmt.Sprintf("SHOW STATS_HEALTHY WHERE Db_name = '%s' AND Table_name = '%s'", dbName, tableName)
-	rows, err := dbm.db.Query(query)
-	if err != nil {
-		return 0
-	}
-	defer rows.Close()
+    query := fmt.Sprintf("SHOW STATS_HEALTHY WHERE Db_name = '%s' AND Table_name = '%s'", dbName, tableName)
+    rows, err := dbm.db.Query(query)
+    if err != nil {
+        return 0
+    }
+    defer rows.Close()
 
-	var dbNameResult, tableNameResult string
-	var healthy int
+    var dbNameResult, tableNameResult string
+    var partition sql.NullString
+    var healthy int
 
-	if rows.Next() {
-		err := rows.Scan(&dbNameResult, &tableNameResult, &healthy, &healthy)
-		if err == nil {
-			return healthy
-		}
-	}
+    if rows.Next() {
+        err := rows.Scan(&dbNameResult, &tableNameResult, &partition, &healthy)
+        if err == nil {
+            return healthy
+        }
+    }
 
-	return 0
+    return 0
+}
+
+// GetSingleTableHealthInDB gets stats health for a specific table in a specific DB
+func (dbm *DBManager) GetSingleTableHealthInDB(dbName, tableName string) int {
+    query := fmt.Sprintf("SHOW STATS_HEALTHY WHERE Db_name = '%s' AND Table_name = '%s'", dbName, tableName)
+    rows, err := dbm.db.Query(query)
+    if err != nil {
+        return 0
+    }
+    defer rows.Close()
+
+    var dbNameResult, tableNameResult string
+    var partition sql.NullString
+    var healthy int
+
+    if rows.Next() {
+        err := rows.Scan(&dbNameResult, &tableNameResult, &partition, &healthy)
+        if err == nil {
+            return healthy
+        }
+    }
+    return 0
+}
+
+// AnalyzeAllTablesInDB analyzes all tables in the specified database
+func (dbm *DBManager) AnalyzeAllTablesInDB(dbName string) {
+    if strings.TrimSpace(dbName) == "" {
+        return
+    }
+    fmt.Printf("    [DB] Analyzing all tables in database: %s\n", dbName)
+
+    // Switch to target DB
+    if _, err := dbm.db.Exec(fmt.Sprintf("USE `%s`", dbName)); err != nil {
+        fmt.Printf("    [Error] Failed to switch to DB %s: %v\n", dbName, err)
+        return
+    }
+
+    // List all tables
+    tblRows, err := dbm.db.Query("SHOW TABLES")
+    if err != nil {
+        fmt.Printf("    [Error] Failed to list tables in %s: %v\n", dbName, err)
+        return
+    }
+    defer tblRows.Close()
+
+    var tables []string
+    for tblRows.Next() {
+        var t string
+        if err := tblRows.Scan(&t); err == nil {
+            tables = append(tables, t)
+        }
+    }
+
+    maxRetries, interval := dbm.getAnalyzeParams()
+    for _, t := range tables {
+        fmt.Printf("    [DB] ANALYZE TABLE %s.%s ALL COLUMNS ...\n", dbName, t)
+        startTime := time.Now()
+        if _, err := dbm.db.Exec(fmt.Sprintf("ANALYZE TABLE `%s` ALL COLUMNS", t)); err != nil {
+            fmt.Printf("      [Error] Analyze failed for %s.%s: %v\n", dbName, t, err)
+            continue
+        }
+
+        // Wait up to N seconds for healthy=100
+        for i := 0; i < maxRetries; i++ {
+            health := dbm.GetSingleTableHealthInDB(dbName, t)
+            if health == 100 {
+                break
+            }
+            time.Sleep(interval)
+            if i == maxRetries-1 {
+                fmt.Printf("      [Warning] Stats health for %s.%s reached %d%%, timeout.\n", dbName, t, health)
+            }
+        }
+
+        duration := time.Since(startTime)
+        finalHealth := dbm.GetSingleTableHealthInDB(dbName, t)
+        fmt.Printf("      [DB] Analyze finished for %s.%s in %.2fs (Health: %d%%)\n", dbName, t, duration.Seconds(), finalHealth)
+    }
+
+    // Switch back to default DB
+    _, _ = dbm.db.Exec(fmt.Sprintf("USE `%s`", dbm.config.DBName))
 }
 
 // AnalyzeTable analyzes a table and waits for health to reach 100
@@ -258,16 +364,16 @@ func (dbm *DBManager) AnalyzeTable(tableName string) {
 		return
 	}
 
-	// Wait for stats to become healthy
-	fmt.Println("    [DB] Waiting for stats to become healthy (100%)...")
-	maxRetries := 20
+    // Wait for stats to become healthy
+    fmt.Println("    [DB] Waiting for stats to become healthy (100%)...")
+    maxRetries, interval := dbm.getAnalyzeParams()
 
 	for i := 0; i < maxRetries; i++ {
 		health := dbm.GetSingleTableHealth(tableName)
 		if health == 100 {
 			break
 		}
-		time.Sleep(1 * time.Second)
+        time.Sleep(interval)
 
 		if i == maxRetries-1 {
 			fmt.Printf("    [Warning] Stats health reached %d%%, timed out waiting for 100%%.\n", health)
@@ -482,20 +588,151 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []QueryResult {
 		}
 		explainRows.Close()
 
-		result := QueryResult{
-			QueryID:              queryID,
-			Query:                query,
-			DurationMs:           float64(duration),
-			Explain:              sb.String(), // 包含完整换行的字符串
-			EstimationErrorValue: maxErrorValue,
-			EstimationErrorRatio: maxErrorRatio,
-			RiskOperatorsCount:   riskCount,
-		}
+        result := QueryResult{
+            QueryID:              queryID,
+            Query:                query,
+            QueryLabel:           extractQueryLabel(query),
+            DurationMs:           float64(duration),
+            Explain:              sb.String(), // 包含完整换行的字符串
+            EstimationErrorValue: maxErrorValue,
+            EstimationErrorRatio: maxErrorRatio,
+            RiskOperatorsCount:   riskCount,
+        }
 		results = append(results, result)
 		queryID++
 	}
 
 	return results
+}
+
+// ExecuteAndExplainQueriesOnDB executes a list of raw SQL queries on the given database name
+// and returns QueryResult entries including EXPLAIN ANALYZE information.
+func (dbm *DBManager) ExecuteAndExplainQueriesOnDB(targetDB string, queries []string) []QueryResult {
+    results := []QueryResult{}
+
+    if targetDB == "" {
+        return results
+    }
+
+    // Switch to target DB
+    _, err := dbm.db.Exec(fmt.Sprintf("USE `%s`", targetDB))
+    if err != nil {
+        fmt.Printf("      [Warning] Cannot switch to DB %s: %v\n", targetDB, err)
+        return results
+    }
+
+    queryID := 1
+
+    for _, query := range queries {
+        q := strings.TrimSpace(query)
+        if q == "" || strings.HasPrefix(q, "--") {
+            continue
+        }
+
+        start := time.Now()
+        rows, err := dbm.db.Query(q)
+        if err != nil {
+            fmt.Printf("      Q%d Error: %v\n", queryID, err)
+            queryID++
+            continue
+        }
+        rows.Close()
+        duration := time.Since(start).Milliseconds()
+
+        explainQuery := fmt.Sprintf("EXPLAIN ANALYZE %s", q)
+        explainRows, err := dbm.db.Query(explainQuery)
+        if err != nil {
+            fmt.Printf("      Explain Error: %v\n", err)
+            queryID++
+            continue
+        }
+
+        columns, _ := explainRows.Columns()
+        count := len(columns)
+        values := make([]interface{}, count)
+        valuePtrs := make([]interface{}, count)
+
+        var sb strings.Builder
+
+        maxErrorRatio := 0.0
+        maxErrorValue := 0.0
+        riskCount := 0
+
+        estRowIdx := -1
+        actRowIdx := -1
+        for i, col := range columns {
+            valuePtrs[i] = &values[i]
+            if strings.EqualFold(col, "estRows") {
+                estRowIdx = i
+            }
+            if strings.EqualFold(col, "actRows") {
+                actRowIdx = i
+            }
+        }
+
+        for i, col := range columns {
+            sb.WriteString(col)
+            if i < count-1 {
+                sb.WriteString("\t")
+            }
+        }
+        sb.WriteString("\n")
+
+        for explainRows.Next() {
+            if err := explainRows.Scan(valuePtrs...); err != nil {
+                continue
+            }
+
+            for i, val := range values {
+                var v interface{}
+                if b, ok := val.([]byte); ok {
+                    v = string(b)
+                } else {
+                    v = val
+                }
+                sb.WriteString(fmt.Sprintf("%v", v))
+                if i < count-1 {
+                    sb.WriteString("\t")
+                }
+            }
+            sb.WriteString("\n")
+
+            if estRowIdx != -1 && actRowIdx != -1 {
+                est := dbm.toFloat(values[estRowIdx])
+                act := dbm.toFloat(values[actRowIdx])
+                act = math.Max(1.0, act)
+                est = math.Max(1.0, est)
+                errVal := math.Abs(act - est)
+                errRatio := math.Max(act, est) / math.Min(act, est)
+                if errRatio > maxErrorRatio {
+                    maxErrorRatio = errRatio
+                    maxErrorValue = errVal
+                }
+                if errRatio >= 10 && errVal >= 1000 {
+                    riskCount++
+                }
+            }
+        }
+        explainRows.Close()
+
+        res := QueryResult{
+            QueryID:              queryID,
+            Query:                q,
+            QueryLabel:           extractQueryLabel(q),
+            DurationMs:           float64(duration),
+            Explain:              sb.String(),
+            EstimationErrorValue: maxErrorValue,
+            EstimationErrorRatio: maxErrorRatio,
+            RiskOperatorsCount:   riskCount,
+        }
+        results = append(results, res)
+        queryID++
+    }
+
+    // Switch back to original DB for safety
+    _, _ = dbm.db.Exec(fmt.Sprintf("USE `%s`", dbm.config.DBName))
+
+    return results
 }
 
 // Helper to safely convert interface to float64

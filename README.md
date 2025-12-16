@@ -125,6 +125,8 @@ Flags:
       --gen-query        Step 3: Generate SQL Queries (based on current DB stats)
   -h, --help             help for det-tool
       --sql-file string  File for incremental DML (default "incremental_dml.sql")
+      --analyze-retries int         Max retries waiting for stats healthy after ANALYZE (default 20)
+      --analyze-interval-ms int     Interval (ms) between retries waiting for stats healthy (default 1000)
 ```
 
 ## 数据模型详解
@@ -161,6 +163,7 @@ Flags:
 - Model: 模型名称
 - stats_healthy_ratio: 统计信息健康度
 - modify_ratio: 修改比例
+- query_label: 查询标签（如：out of bound, point lookup, range scan, in the hole, across hole, mixed condition）
 - estimation_error_ratio: 估算误差比例
 - estimation_error_value: 估算误差值
 - query: SQL查询
@@ -195,6 +198,15 @@ TPC-H基准测试包含一组面向业务的即席查询和并发数据修改，
   }
 }
 ```
+
+### 将 TPCC/TPCH 查询结果纳入报告
+- 工具内置了一小组只读的 TPCC/TPCH 查询集合：
+  - TPCH: 默认执行 q1/q6/q12，也可在 `incremental.queries` 中指定，如 `["q1","q6"]`
+  - TPCC: 内置若干聚合/Join 查询，用于评估优化器行为
+- 当运行 `--exec-query` 时，工具会：
+  - 对内部模型(如 skew/holes/low_card)读取 `queries_*.sql` 执行
+  - 对外部模型(external_tpcc/external_tpch)在其 `params.db_name` 指定的数据库上执行内置查询集合
+- 所有查询结果(包括外部TPCC/TPCH)都会写入同一份 CSV/HTML/JSON 报告
 
 ## 高级用法
 
