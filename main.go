@@ -62,6 +62,9 @@ var (
     dbConfigFile string
     analyzeWaitRetries int
     analyzeWaitIntervalMs int
+    dmlBatchSize int
+    insertBatchSize int
+    incInsertMode string
 )
 
 func init() {
@@ -75,6 +78,9 @@ func init() {
     pflag.StringVar(&dbConfigFile, "db-config", "db_config.json", "Database configuration file")
     pflag.IntVar(&analyzeWaitRetries, "analyze-retries", 20, "Max retries waiting for stats healthy after ANALYZE")
     pflag.IntVar(&analyzeWaitIntervalMs, "analyze-interval-ms", 1000, "Interval (ms) between retries waiting for stats healthy")
+    pflag.IntVar(&dmlBatchSize, "dml-batch-size", 100, "Statements per transaction commit when executing SQL file")
+    pflag.IntVar(&insertBatchSize, "insert-batch-size", 1000, "Rows per multi-row INSERT in incremental DML generation")
+    pflag.StringVar(&incInsertMode, "inc-insert-mode", "insert", "Mode for incremental inserts: insert|load")
 }
 
 func main() {
@@ -102,6 +108,8 @@ func main() {
     if analyzeWaitRetries <= 0 { analyzeWaitRetries = 20 }
     if analyzeWaitIntervalMs <= 0 { analyzeWaitIntervalMs = 1000 }
     dbManager.SetAnalyzeWaitPolicy(analyzeWaitRetries, time.Duration(analyzeWaitIntervalMs)*time.Millisecond)
+    if dmlBatchSize <= 0 { dmlBatchSize = 100 }
+    dbManager.SetDMLBatchSize(dmlBatchSize)
 	externalRunner := NewExternalBenchRunner(*dbConfig)
 	dataGenerator := NewDataGenerator()
 	queryBuilder := NewQueryBuilder()
@@ -156,8 +164,10 @@ func main() {
 		fmt.Println("\n=== [Step 2] Incremental Data Update ===")
 		dbManager.InitDB(false)
 
-		sqlGenerator := NewSqlGenerator()
-		dataModifier := NewDataModifier(sqlGenerator)
+        sqlGenerator := NewSqlGenerator()
+        if insertBatchSize <= 0 { insertBatchSize = 1000 }
+        dataModifier := NewDataModifier(sqlGenerator, insertBatchSize)
+        if incInsertMode == "load" { dataModifier.insertMode = "load" }
 
 		for _, model := range config.Models {
 			name := model.Name

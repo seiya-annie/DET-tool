@@ -21,6 +21,7 @@ type DBManager struct {
     db     *sql.DB
     analyzeMaxRetries int
     analyzeInterval   time.Duration
+    dmlBatchSize      int
 }
 
 // NewDBManager creates a new DBManager instance
@@ -81,6 +82,13 @@ func (dbm *DBManager) EnsureConnection() {
 		fmt.Println("    [DB] Reconnecting...")
 		dbm.connect()
 	}
+}
+
+// SetDMLBatchSize sets the per-transaction statement batch size when executing SQL scripts
+func (dbm *DBManager) SetDMLBatchSize(n int) {
+    if n > 0 {
+        dbm.dmlBatchSize = n
+    }
 }
 
 // InitDB initializes the database
@@ -387,7 +395,7 @@ func (dbm *DBManager) AnalyzeTable(tableName string) {
 
 // ExecuteSQLFile executes SQL statements from a file
 func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
-	fmt.Printf("    [DB] Executing SQL script: %s\n", sqlPath)
+    fmt.Printf("    [DB] Executing SQL script: %s\n", sqlPath)
 
 	if _, err := os.Stat(sqlPath); os.IsNotExist(err) {
 		return
@@ -399,16 +407,22 @@ func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
 		return
 	}
 
-	// 临时调大当前 Session 的内存限制
-	_, err = dbm.db.Exec("SET tidb_mem_quota_query = 2 * 1024 * 1024 * 1024")
-	if err != nil {
-		fmt.Printf("    [Warning] Failed to increase memory quota: %v\n", err)
-	}
+    // 临时调大当前 Session 的内存限制
+    _, err = dbm.db.Exec("SET tidb_mem_quota_query = 2 * 1024 * 1024 * 1024")
+    if err != nil {
+        fmt.Printf("    [Warning] Failed to increase memory quota: %v\n", err)
+    }
+
+    // 尝试开启 local_infile 以支持 LOAD DATA LOCAL INFILE
+    _, _ = dbm.db.Exec("SET GLOBAL local_infile = 1")
 
 	statements := strings.Split(string(content), ";")
 
-	// 分批事务控制
-	batchSize := 100 // 每 100 条 SQL 提交一次
+    // 分批事务控制
+    batchSize := dbm.dmlBatchSize
+    if batchSize <= 0 {
+        batchSize = 100 // 默认每 100 条 SQL 提交一次
+    }
 	var tx *sql.Tx
 
 	stmtCount := 0
@@ -439,8 +453,26 @@ func (dbm *DBManager) ExecuteSQLFile(sqlPath string) {
 			}
 		}
 
-		// 执行 SQL
-		_, err := tx.Exec(statement)
+        // 如果是 LOAD DATA LOCAL INFILE，则先注册本地文件路径
+        up := strings.ToUpper(statement)
+        if strings.Contains(up, "LOAD DATA LOCAL INFILE") {
+            // 简单解析 '...'
+            // 查找 INFILE 后的第一个单引号和下一个单引号
+            if i := strings.Index(up, "INFILE"); i >= 0 {
+                rest := statement[i:]
+                if j := strings.IndexByte(rest, '\''); j >= 0 {
+                    rest2 := rest[j+1:]
+                    if k := strings.IndexByte(rest2, '\''); k >= 0 {
+                        path := rest2[:k]
+                        // 注册到 mysql 驱动，允许读取该路径
+                        mysql.RegisterLocalFile(path)
+                    }
+                }
+            }
+        }
+
+        // 执行 SQL
+        _, err := tx.Exec(statement)
 		if err != nil {
 			fmt.Printf("      SQL Error: %v\n      Statement partial: %s\n", err, truncateString(statement, 100))
 			// 遇到错误回滚当前批次并退出，或者选择继续

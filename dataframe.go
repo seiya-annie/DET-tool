@@ -123,6 +123,14 @@ func (df *DataFrame) SaveCSV(filename string) error {
 	return nil
 }
 
+// Size returns the number of rows in the DataFrame
+func (df *DataFrame) Size() int {
+    if df == nil {
+        return 0
+    }
+    return len(df.data)
+}
+
 // LoadDataFrameFromCSV loads a DataFrame from a CSV file
 func LoadDataFrameFromCSV(filename string) (*DataFrame, error) {
 	file, err := os.Open(filename)
