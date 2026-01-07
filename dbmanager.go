@@ -887,6 +887,27 @@ func (dbm *DBManager) GetStatsHealthy() map[string]int {
 	return statsHealthy
 }
 
+// GetRandomIDs fetches N random primary keys (id) from a table
+func (dbm *DBManager) GetRandomIDs(tableName string, n int) []int64 {
+    if n <= 0 { return nil }
+    dbm.EnsureConnection()
+    // Prefer ORDER BY RAND() LIMIT n for simplicity; for huge tables, consider TABLESAMPLE or other strategies
+    q := fmt.Sprintf("SELECT id FROM `%s` WHERE id IS NOT NULL ORDER BY RAND() LIMIT %d", tableName, n)
+    rows, err := dbm.db.Query(q)
+    if err != nil {
+        return nil
+    }
+    defer rows.Close()
+    res := make([]int64, 0, n)
+    for rows.Next() {
+        var id sql.NullInt64
+        if err := rows.Scan(&id); err == nil && id.Valid {
+            res = append(res, id.Int64)
+        }
+    }
+    return res
+}
+
 // Close closes the database connection
 func (dbm *DBManager) Close() {
 	if dbm.db != nil {
