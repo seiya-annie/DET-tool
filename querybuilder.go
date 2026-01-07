@@ -63,9 +63,9 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 	}
 
     // Generate integer-based queries (with labels)
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, maxInt+1000))
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, minInt+1))
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN %d AND %d", tableName, tableName, colInt, minInt, minInt+50))
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: int out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, maxInt+1000))
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: int point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, minInt+1))
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: int range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN %d AND %d", tableName, tableName, colInt, minInt, minInt+50))
 
 	// Generate holes-specific queries if applicable
 	if modelType == "holes" {
@@ -74,7 +74,7 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 			holeEnd := int(getFloatValue(map[string]interface{}{"val": intHoleRange[1]}, "val"))
 
             sqls = append(sqls, fmt.Sprintf("-- [Int] Holes Specific Queries"))
-            sqls = append(sqls, fmt.Sprintf("/* LABEL: in the hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > %d AND %s < %d",
+            sqls = append(sqls, fmt.Sprintf("/* LABEL: int in the hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > %d AND %s < %d",
                     tableName, tableName, colInt, holeStart, colInt, holeEnd))
 
 			// Generate crossing query
@@ -87,7 +87,7 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 				crossStart = holeStart - offset
 			}
 			crossEnd := holeStart + offset
-            sqls = append(sqls, fmt.Sprintf("/* LABEL: across hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > %d AND %s < %d",
+            sqls = append(sqls, fmt.Sprintf("/* LABEL: int across hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > %d AND %s < %d",
                     tableName, tableName, colInt, crossStart, colInt, crossEnd))
 		}
 	}
@@ -109,11 +109,11 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 		}
 	}
 
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'",
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: string out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'",
         tableName, tableName, colStr, prefix, suffixEnd+1000))
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'",
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: string point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'",
         tableName, tableName, colStr, prefix, suffixStart+1))
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s%d' AND '%s%d'",
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: string range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s%d' AND '%s%d'",
         tableName, tableName, colStr, prefix, suffixStart, prefix, suffixStart+50))
 
 	// Generate datetime-based queries
@@ -144,15 +144,15 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 		dtMin = time.Now().AddDate(-1, 0, 0)
 	}
 
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s'",
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s'",
         tableName, tableName, colDt, dateMax))
 
 	dtEq := dtMin.AddDate(0, 0, 1).Format("2006-01-02")
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'",
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'",
         tableName, tableName, colDt, dtEq))
 
 	dtRangeEnd := dtMin.AddDate(0, 0, 30).Format("2006-01-02")
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s' AND '%s'",
+    sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s' AND '%s'",
         tableName, tableName, colDt, dateMin, dtRangeEnd))
 
 	// Generate datetime holes-specific queries if applicable
@@ -162,7 +162,7 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 			dhEndStr := fmt.Sprintf("%v", dateHoleRange[1])
 
 			sqls = append(sqls, "-- [Datetime] Holes Specific Queries")
-            sqls = append(sqls, fmt.Sprintf("/* LABEL: in the hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'",
+            sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime in the hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'",
                     tableName, tableName, colDt, dhStartStr, colDt, dhEndStr))
 
 			// Generate crossing query
@@ -177,7 +177,7 @@ func (qb *QueryBuilder) Generate(modelConfig ModelConfig, tableName string, outp
 				}
 				crossStart := dhStart.Add(-offset).Format("2006-01-02")
 				crossEnd := dhStart.Add(offset).Format("2006-01-02")
-                sqls = append(sqls, fmt.Sprintf("/* LABEL: across hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'",
+                sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime across hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'",
                         tableName, tableName, colDt, crossStart, colDt, crossEnd))
 			}
 		}

@@ -124,9 +124,12 @@ Flags:
       --gen-inc          Step 2: Generate & Execute Incremental Data
       --gen-query        Step 3: Generate SQL Queries (based on current DB stats)
   -h, --help             help for det-tool
-      --sql-file string  File for incremental DML (default "incremental_dml.sql")
+      --sql-file string          File for incremental DML (default "incremental_dml.sql")
       --analyze-retries int         Max retries waiting for stats healthy after ANALYZE (default 20)
       --analyze-interval-ms int     Interval (ms) between retries waiting for stats healthy (default 1000)
+      --dml-batch-size int          Statements per transaction commit when executing SQL file (default 100)
+      --insert-batch-size int       Rows per multi-row INSERT in incremental DML generation (default 1000)
+      --inc-insert-mode string      Mode for incremental inserts: insert|load (default "insert")
 ```
 
 ## 数据模型详解
@@ -163,7 +166,7 @@ Flags:
 - Model: 模型名称
 - stats_healthy_ratio: 统计信息健康度
 - modify_ratio: 修改比例
-- query_label: 查询标签（如：out of bound, point lookup, range scan, in the hole, across hole, mixed condition）
+- query_label: 查询标签（如：int out of bound, string out of bound, datetime out of bound, int point lookup, string point lookup, datetime point lookup, int range scan, string range scan, datetime range scan, int in the hole, string in the hole, datetime in the hole, int across hole, string across hole, datetime across hole, mixed condition）
 - estimation_error_ratio: 估算误差比例
 - estimation_error_value: 估算误差值
 - query: SQL查询
@@ -316,3 +319,8 @@ export DET_DEBUG=1
 - 改进错误处理
 - 优化性能
 - 添加更多配置选项
+### 增量执行性能优化建议
+- 增大事务提交批次：`--dml-batch-size 2000`
+- 增大多值 INSERT 批次：`--insert-batch-size 5000`（注意数据库 `max_allowed_packet`）
+- 使用文件装载插入：`--inc-insert-mode load`（生成 CSV 并使用 `LOAD DATA LOCAL INFILE`）
+- 批量删除：工具已改为优先按 `<table>_int` 键值分批 `IN` 删除，键不存在时退回 `DELETE ... LIMIT`。

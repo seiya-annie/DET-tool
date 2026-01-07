@@ -9,7 +9,7 @@ import (
 
 // SqlGenerator generates SQL statements
 type SqlGenerator struct {
-	statements []string
+    statements []string
 }
 
 // NewSqlGenerator creates a new SqlGenerator
@@ -21,9 +21,41 @@ func NewSqlGenerator() *SqlGenerator {
 
 // LogDeleteLimit logs a DELETE statement with LIMIT
 func (sg *SqlGenerator) LogDeleteLimit(tableName string, limitCount int) {
-	if limitCount > 0 {
-		sg.statements = append(sg.statements, fmt.Sprintf("DELETE FROM `%s` LIMIT %d;", tableName, limitCount))
-	}
+    if limitCount > 0 {
+        sg.statements = append(sg.statements, fmt.Sprintf("DELETE FROM `%s` LIMIT %d;", tableName, limitCount))
+    }
+}
+
+// LogDeleteByIDs logs batched DELETE statements using IN lists on idColumn
+func (sg *SqlGenerator) LogDeleteByIDs(tableName string, idColumn string, ids []interface{}, batchSize int) {
+    if len(ids) == 0 {
+        return
+    }
+    if batchSize <= 0 {
+        batchSize = 1000
+    }
+    // format id values
+    toSQL := func(v interface{}) string {
+        switch x := v.(type) {
+        case string:
+            escaped := strings.ReplaceAll(x, "'", "''")
+            return fmt.Sprintf("'%s'", escaped)
+        default:
+            return fmt.Sprintf("%v", x)
+        }
+    }
+    for i := 0; i < len(ids); i += batchSize {
+        end := i + batchSize
+        if end > len(ids) {
+            end = len(ids)
+        }
+        vals := make([]string, end-i)
+        for j := i; j < end; j++ {
+            vals[j-i] = toSQL(ids[j])
+        }
+        sql := fmt.Sprintf("DELETE FROM `%s` WHERE `%s` IN (%s);", tableName, idColumn, strings.Join(vals, ", "))
+        sg.statements = append(sg.statements, sql)
+    }
 }
 
 // LogUpdate logs UPDATE statements for multiple rows
@@ -110,6 +142,62 @@ func (sg *SqlGenerator) LogInsertBatch(tableName string, df *DataFrame, batchSiz
 			sg.statements = append(sg.statements, sql)
 		}
 	}
+}
+
+// LogLoadDataLocalInfile logs a LOAD DATA LOCAL INFILE statement for the given DataFrame CSV file
+func (sg *SqlGenerator) LogLoadDataLocalInfile(tableName string, df *DataFrame, csvPath string) {
+    if df == nil || len(df.columns) == 0 || csvPath == "" {
+        return
+    }
+    // Build column variable list and SET null mapping
+    varCols := make([]string, len(df.columns))
+    setClauses := make([]string, len(df.columns))
+    for i, col := range df.columns {
+        varName := fmt.Sprintf("@v%d", i)
+        varCols[i] = varName
+        setClauses[i] = fmt.Sprintf("`%s` = NULLIF(%s, '')", col, varName)
+    }
+    stmt := fmt.Sprintf("LOAD DATA LOCAL INFILE '%s' INTO TABLE `%s` FIELDS TERMINATED BY ',' ENCLOSED BY '" + `"` + "' LINES TERMINATED BY '\n' IGNORE 1 LINES ( %s ) SET %s;",
+        csvPath, tableName, strings.Join(varCols, ", "), strings.Join(setClauses, ", "))
+    sg.statements = append(sg.statements, stmt)
+}
+
+// LogCreateTempTable creates a temporary table based on DataFrame columns
+func (sg *SqlGenerator) LogCreateTempTable(tmpTable string, df *DataFrame, idColumn string) {
+    if df == nil || len(df.columns) == 0 {
+        return
+    }
+    // Drop if exists
+    sg.statements = append(sg.statements, fmt.Sprintf("DROP TEMPORARY TABLE IF EXISTS `%s`;", tmpTable))
+
+    cols := make([]string, 0, len(df.columns))
+    for _, col := range df.columns {
+        sqlType := sg.inferSQLType(df, col)
+        if col == idColumn {
+            sqlType = "BIGINT"
+        }
+        cols = append(cols, fmt.Sprintf("`%s` %s", col, sqlType))
+    }
+    create := fmt.Sprintf("CREATE TEMPORARY TABLE `%s` (%s);", tmpTable, strings.Join(cols, ", "))
+    sg.statements = append(sg.statements, create)
+}
+
+// LogUpdateFromTempJoin generates UPDATE ... JOIN ... SET ... using a temp table
+func (sg *SqlGenerator) LogUpdateFromTempJoin(targetTable, tmpTable, idColumn string, columnNames []string) {
+    if len(columnNames) == 0 {
+        return
+    }
+    sets := make([]string, 0, len(columnNames))
+    for _, col := range columnNames {
+        sets = append(sets, fmt.Sprintf("t.`%s`=u.`%s`", col, col))
+    }
+    sql := fmt.Sprintf("UPDATE `%s` t JOIN `%s` u ON t.`%s`=u.`%s` SET %s;", targetTable, tmpTable, idColumn, idColumn, strings.Join(sets, ", "))
+    sg.statements = append(sg.statements, sql)
+}
+
+// LogDropTempTable drops a temporary table
+func (sg *SqlGenerator) LogDropTempTable(tmpTable string) {
+    sg.statements = append(sg.statements, fmt.Sprintf("DROP TEMPORARY TABLE IF EXISTS `%s`;", tmpTable))
 }
 
 // LogCreateTable logs CREATE TABLE statement based on DataFrame
