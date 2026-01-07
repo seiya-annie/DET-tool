@@ -166,7 +166,7 @@ func main() {
 
         sqlGenerator := NewSqlGenerator()
         if insertBatchSize <= 0 { insertBatchSize = 1000 }
-        dataModifier := NewDataModifier(sqlGenerator, insertBatchSize)
+        dataModifier := NewDataModifier(sqlGenerator, insertBatchSize, dbManager)
         if incInsertMode == "load" { dataModifier.insertMode = "load" }
 
 		for _, model := range config.Models {

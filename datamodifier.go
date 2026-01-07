@@ -12,16 +12,18 @@ type DataModifier struct {
     rng            *rand.Rand
     insertBatchSz  int
     insertMode     string // "insert" or "load"
+    dbm            *DBManager
 }
 
 // NewDataModifier creates a new DataModifier
-func NewDataModifier(sqlGen *SqlGenerator, insertBatchSize int) *DataModifier {
+func NewDataModifier(sqlGen *SqlGenerator, insertBatchSize int, dbm *DBManager) *DataModifier {
     if insertBatchSize <= 0 { insertBatchSize = 1000 }
     return &DataModifier{
         sqlGen:        sqlGen,
         rng:           rand.New(rand.NewSource(rand.Int63())),
         insertBatchSz: insertBatchSize,
         insertMode:    "insert",
+        dbm:           dbm,
     }
 }
 
@@ -203,66 +205,74 @@ func (dm *DataModifier) applyUpdates(df *DataFrame, modelConfig ModelConfig, tab
 	dataGen := NewDataGenerator()
 	updateData := dataGen.Generate(tempConfig)
 
-    // Build column names (excluding ID column)
-    columnNames := []string{}
+    // Build column names (excluding ID column in target table)
+    columnNames := make([]string, 0, len(df.columns))
     for _, col := range df.columns {
-        if col != idColumn {
+        if col != idColumn { // idColumn is <table>_int in df; we will join on DB primary key 'id'
             columnNames = append(columnNames, col)
         }
     }
 
-    // Apply updates to the DataFrame and also prepare a temp DataFrame to write to CSV (for JOIN UPDATE)
+    // Fetch random DB primary keys to update
+    var ids []int64
+    if dm.dbm != nil {
+        ids = dm.dbm.GetRandomIDs(tableName, updateCount)
+    }
+
+    // Prepare a temp DataFrame with columns: id + df.columns (so temp table has DB id plus values)
     tmp := NewDataFrame()
+    tmp.AddColumn("id")
     for _, c := range df.columns { tmp.AddColumn(c) }
 
-    for i, idx := range selectedIndices {
-        if idx >= len(df.data) || i >= len(updateData.data) {
+    for i := 0; i < updateCount && i < len(ids) && i < len(selectedIndices) && i < len(updateData.data); i++ {
+        idx := selectedIndices[i]
+        if idx >= len(df.data) {
             continue
         }
-        // Apply updates into main df
         updateRow := updateData.data[i]
-        // prepare a row for tmp table with id and new values
-        tmpRow := make([]interface{}, len(df.columns))
-        copy(tmpRow, df.data[idx])
+
+        // Update in-memory df
         for j, colName := range columnNames {
             colIndex := getColumnIndex(df, colName)
             if colIndex != -1 && colIndex < len(df.data[idx]) && j < len(updateRow) {
                 df.data[idx][colIndex] = updateRow[j]
-                tmpRow[colIndex] = updateRow[j]
             }
         }
-        // ensure id is present in tmp row
-        tmpRow[idColIndex] = df.data[idx][idColIndex]
+
+        // Build tmp row: [id] + current df row values (with updated values)
+        tmpRow := make([]interface{}, 1+len(df.columns))
+        tmpRow[0] = ids[i]
+        copy(tmpRow[1:], df.data[idx])
         tmp.AddRow(tmpRow)
     }
 
-    // Log the UPDATE via temp table + JOIN
+    // Log the UPDATE via temp table + JOIN on primary key 'id'
     if dm.sqlGen != nil && tmp.Size() > 0 {
         dm.sqlGen.LogComment(fmt.Sprintf("UPDATE operations for %s (temp table join)", tableName))
         tmpName := fmt.Sprintf("tmp_%s_update", tableName)
-        dm.sqlGen.LogCreateTempTable(tmpName, tmp, idColumn)
+        dm.sqlGen.LogCreateTempTable(tmpName, tmp, "id")
         // Save tmp to CSV and load
         csvName := fmt.Sprintf("inc_update_%s.csv", tableName)
         abs, _ := filepath.Abs(csvName)
         if err := tmp.SaveCSV(csvName); err == nil {
             dm.sqlGen.LogLoadDataLocalInfile(tmpName, tmp, abs)
-            dm.sqlGen.LogUpdateFromTempJoin(tableName, tmpName, idColumn, columnNames)
+            dm.sqlGen.LogUpdateFromTempJoin(tableName, tmpName, "id", columnNames)
             dm.sqlGen.LogDropTempTable(tmpName)
         } else {
             // fallback to per-row updates if CSV fails
-            ids := make([]interface{}, tmp.Size())
+            idsIfc := make([]interface{}, tmp.Size())
             values := make([][]interface{}, tmp.Size())
             for i := 0; i < tmp.Size(); i++ {
-                ids[i] = tmp.data[i][idColIndex]
+                idsIfc[i] = tmp.data[i][0] // first column is id
                 values[i] = make([]interface{}, len(columnNames))
                 for j, colName := range columnNames {
-                    colIndex := getColumnIndex(tmp, colName)
+                    colIndex := getColumnIndex(df, colName)
                     if colIndex >= 0 {
-                        values[i][j] = tmp.data[i][colIndex]
+                        values[i][j] = tmp.data[i][1+colIndex]
                     }
                 }
             }
-            dm.sqlGen.LogUpdate(tableName, idColumn, ids, columnNames, values)
+            dm.sqlGen.LogUpdate(tableName, "id", idsIfc, columnNames, values)
         }
     }
 
@@ -288,25 +298,15 @@ func (dm *DataModifier) applyDeletes(df *DataFrame, tableName string, deleteRati
 		deleteCount = currentTotal
 	}
 
-    // Log the DELETE statements using IN batches on id column if possible
+    // Log the DELETE statements using IN batches on DB primary key if possible
     if dm.sqlGen != nil {
         dm.sqlGen.LogComment(fmt.Sprintf("DELETE operations for %s", tableName))
-        idColumn := fmt.Sprintf("%s_int", tableName)
-        idIdx := getColumnIndex(df, idColumn)
-        if idIdx >= 0 {
-            // collect random ids to delete
-            ids := make([]interface{}, 0, deleteCount)
-            used := make(map[int]bool)
-            for len(ids) < deleteCount && len(used) < currentTotal {
-                idx := dm.rng.Intn(currentTotal)
-                if used[idx] { continue }
-                used[idx] = true
-                if idIdx < len(df.data[idx]) && df.data[idx][idIdx] != nil {
-                    ids = append(ids, df.data[idx][idIdx])
-                }
-            }
+        if dm.dbm != nil {
+            ids := dm.dbm.GetRandomIDs(tableName, deleteCount)
             if len(ids) > 0 {
-                dm.sqlGen.LogDeleteByIDs(tableName, idColumn, ids, 1000)
+                idsIfc := make([]interface{}, len(ids))
+                for i, v := range ids { idsIfc[i] = v }
+                dm.sqlGen.LogDeleteByIDs(tableName, "id", idsIfc, 1000)
             } else {
                 dm.sqlGen.LogDeleteLimit(tableName, deleteCount)
             }
