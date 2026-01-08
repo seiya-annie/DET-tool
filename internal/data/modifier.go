@@ -57,10 +57,28 @@ func (dm *DataModifier) Apply(df *DataFrame, modelConfig map[string]interface{},
     result := dm.cloneDataFrame(df)
     insertRows := int(getFloatValue(inc, "insert_rows"))
     if insertRows > 0 { result = dm.applyInserts(result, modelConfig, tableName, insertRows, logger); stats.Inserted = insertRows }
+    // Use BaseRows as target basis for update/delete counts; convert to ratio on current size
+    baseRows := stats.BaseRows
     updateRatio := getFloatValue(inc, "update_ratio")
-    if updateRatio > 0 && len(result.data) > 0 { var up int; result, up = dm.applyUpdates(result, modelConfig, tableName, updateRatio, logger); stats.Updated = up }
+    if updateRatio > 0 && len(result.data) > 0 {
+        targetUpdate := int(float64(baseRows) * updateRatio)
+        if targetUpdate == 0 && updateRatio > 0 { targetUpdate = 1 }
+        ratioOnCurrent := float64(targetUpdate) / float64(len(result.data))
+        if ratioOnCurrent > 1 { ratioOnCurrent = 1 }
+        var up int
+        result, up = dm.applyUpdates(result, modelConfig, tableName, ratioOnCurrent, logger)
+        stats.Updated = up
+    }
     deleteRatio := getFloatValue(inc, "delete_ratio")
-    if deleteRatio > 0 && len(result.data) > 0 { var del int; result, del = dm.applyDeletes(result, tableName, deleteRatio, logger); stats.Deleted = del }
+    if deleteRatio > 0 && len(result.data) > 0 {
+        targetDelete := int(float64(baseRows) * deleteRatio)
+        if targetDelete == 0 && deleteRatio > 0 { targetDelete = 1 }
+        ratioOnCurrent := float64(targetDelete) / float64(len(result.data))
+        if ratioOnCurrent > 1 { ratioOnCurrent = 1 }
+        var del int
+        result, del = dm.applyDeletes(result, tableName, ratioOnCurrent, logger)
+        stats.Deleted = del
+    }
     return result, stats
 }
 
