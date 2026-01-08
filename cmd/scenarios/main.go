@@ -336,13 +336,12 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
     th, td { border: 1px solid #e5e5e5; padding: 6px 8px; text-align: left; vertical-align: top; }
     th { background: #4CAF50; color: #fff; position: sticky; top: 0; }
     tr:nth-child(even) { background: #fafafa; }
-    .sql { font-family: Consolas, Menlo, Monaco, 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; }
+    .sql { font-family: Consolas, Menlo, Monaco, 'Courier New', monospace; white-space: pre-wrap; word-break: normal; overflow-wrap: anywhere; min-width: 40ch; }
   </style>
   </head>
 <body>
   <div class="container">
     <h1>Scenario Summary</h1>
-    <h2>SQL 透视（按 Model + Query Label 分组）</h2>
     %PIVOT_TABLE%
   </div>
 </body>
