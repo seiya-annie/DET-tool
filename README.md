@@ -41,6 +41,8 @@ go mod download
 3. 构建项目:
 ```bash
 go build -o det-tool
+ # 可选：构建三场景跑批工具
+ (cd cmd/scenarios && go build -o run-scenarios)
 ```
 
 ### 配置
@@ -95,6 +97,7 @@ go build -o det-tool
 #### 2. 生成增量数据
 ```bash
 ./det-tool --gen-inc
+./det-tool --gen-inc --sql-file incremental_dml.sql --inc-insert-mode load --insert-batch-size 5000 --dml-batch-size 2000
 ```
 
 #### 3. 生成查询
@@ -105,12 +108,46 @@ go build -o det-tool
 #### 4. 执行查询并生成报告
 ```bash
 ./det-tool --exec-query
+# 报告中 ModifyRatio 使用“实际变更率”而非配置目标值
+./det-tool --exec-query --report-use-actual-inc
 ```
 
 #### 5. 执行所有步骤
 ```bash
 ./det-tool --all
 ```
+
+### 场景测试（20%/50%/80%）
+
+可使用 `cmd/scenarios/run-scenarios` 一键生成三份配置并依次运行 det-tool，自动收集报告到 `runs/`。
+
+1) 构建（如未构建过）
+
+```bash
+(cd cmd/scenarios && go build -o run-scenarios)
+```
+
+2) 执行三场景并在报告中显示“实际变更率”（建议）
+
+```bash
+cmd/scenarios/run-scenarios \
+  --config config.json \
+  --db-config db_config.json \
+  --ratios 0.2,0.5,0.8 \
+  --inc-insert-mode load \
+  --insert-batch-size 5000 \
+  --dml-batch-size 2000 \
+  --tool-output-dir output \
+  --out runs \
+  --report-use-actual-inc
+```
+
+3) 结果产物
+
+- 报告：`runs/report_20.{html,csv,json}`, `runs/report_50.{...}`, `runs/report_80.{...}`
+- 汇总：`runs/summary.json`（包含每个场景的 total_queries、success_rate、bad_cases、各模型 modify_ratio、stats_healthy）
+
+提示：`--tool-output-dir` 用于指定 det-tool 的输出基础目录（默认 `output`）；场景工具会从该目录下的 `reports/` 收集最新报告。
 
 ### 命令行参数
 
@@ -130,6 +167,9 @@ Flags:
       --dml-batch-size int          Statements per transaction commit when executing SQL file (default 100)
       --insert-batch-size int       Rows per multi-row INSERT in incremental DML generation (default 1000)
       --inc-insert-mode string      Mode for incremental inserts: insert|load (default "insert")
+      --output-dir string           Base directory for generated outputs (reports, queries, datasets, DML) (default "output")
+      --tmp-dir string              Directory for temporary CSVs used by incremental DML (default "tmp")
+      --report-use-actual-inc       Display actual modify ratio measured from incremental DML instead of target from config (default false)
 ```
 
 ## 数据模型详解
@@ -214,20 +254,10 @@ TPC-H基准测试包含一组面向业务的即席查询和并发数据修改，
 ## 高级用法
 
 ### 自定义查询生成
-可以通过修改查询生成器来创建自定义的查询模式:
-
-```go
-queryBuilder := NewQueryBuilder()
-queryBuilder.Generate(modelConfig, tableName, outputFile, currentStats)
-```
+工具内部已切换至 internal/query.QueryBuilder，无需在外部直接调用。
 
 ### 数据生成扩展
-可以通过扩展数据生成器来支持新的数据分布模式:
-
-```go
-dataGenerator := NewDataGenerator()
-df := dataGenerator.Generate(modelConfig)
-```
+工具内部已切换至 internal/data.DataGenerator/DataModifier，无需在外部直接调用。
 
 ### 报告自定义
 可以自定义报告生成器来创建特定格式的报告:
@@ -324,3 +354,18 @@ export DET_DEBUG=1
 - 增大多值 INSERT 批次：`--insert-batch-size 5000`（注意数据库 `max_allowed_packet`）
 - 使用文件装载插入：`--inc-insert-mode load`（生成 CSV 并使用 `LOAD DATA LOCAL INFILE`）
 - 批量删除：工具已改为优先按 `<table>_int` 键值分批 `IN` 删除，键不存在时退回 `DELETE ... LIMIT`。
+### 目录与输出
+
+运行后默认生成如下目录（可通过 `--output-dir` 与 `--tmp-dir` 调整）：
+
+```
+output/
+├── datasets/                 # 基线 CSV：dataset_<Model>_base.csv
+├── queries/                  # 查询 SQL：queries_<Model>.sql
+└── reports/                  # 报表：report_execution_<timestamp>.{csv,html,json}
+
+tmp/
+└── inc_*_*.csv               # 增量阶段的中转 CSV（LOAD DATA / JOIN UPDATE 使用）
+```
+
+建议在 `.gitignore` 中忽略以上目录，以避免大量二进制输出进入版本库。

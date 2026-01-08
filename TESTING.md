@@ -17,7 +17,8 @@
    - **SQL生成器 (SqlGenerator)**: 生成INSERT、UPDATE、DELETE语句
    - **数据修改器 (DataModifier)**: 支持增量数据修改操作
    - **外部基准测试运行器 (ExternalBenchRunner)**: 支持TPC-C和TPC-H基准测试
-   - **报告生成器 (ReportGenerator)**: 支持CSV、HTML、JSON格式报告
+- **报告生成器 (ReportGenerator)**: 支持CSV、HTML、JSON格式报告
+  - 新增 `--report-use-actual-inc`：报告 ModifyRatio 可显示“实际变更率”（基于本次增量执行统计）或“目标变更率”（配置值）
 
 3. **数据模型支持**
    - **Skew (数据倾斜)**: 支持权重配置和倾斜分布
@@ -86,8 +87,8 @@
 # 生成查询
 ./det-tool --gen-query
 
-# 执行查询并生成报告
-./det-tool --exec-query
+# 执行查询并生成报告（显示实际变更率）
+./det-tool --exec-query --report-use-actual-inc
 
 # 一键执行所有步骤
 ./det-tool --all
@@ -134,21 +135,23 @@
 
 ```
 det-tool/
-├── main.go              # 主程序入口
-├── dbmanager.go         # 数据库管理器
-├── datagenerator.go     # 数据生成器
-├── querybuilder.go      # 查询构建器
-├── sqlgenerator.go      # SQL生成器
-├── datamodifier.go      # 数据修改器
-├── externalrunner.go    # 外部基准测试运行器
-├── reporter.go          # 报告生成器
-├── dataframe.go         # 数据结构定义
-├── utils.go             # 工具函数
-├── config.go.example    # 配置示例
-├── go.mod               # Go模块定义
-├── Makefile             # 构建脚本
-├── Dockerfile           # Docker支持
-└── README.md            # 使用文档
+├── main.go                 # 主程序入口
+├── internal/db/dbmanager.go
+├── internal/query/querybuilder.go
+├── internal/sqlgen/sqlgenerator.go
+├── internal/data/frame.go
+├── internal/data/generator.go
+├── internal/data/modifier.go
+├── internal/report/generator.go
+├── internal/types/types.go
+├── externalrunner.go
+├── reporter.go            # 兼容层，主要逻辑已迁到 internal/report
+├── logger_adapter.go      # internal/data -> sqlgen 的 SQLLogger 适配
+├── sqlgen_adapter.go      # 顶层 SqlGenerator 适配到 internal/sqlgen
+├── cmd/scenarios/main.go  # 三场景跑批工具
+├── scripts/clean.sh
+├── go.mod
+└── README.md
 ```
 
 ### 🚀 后续建议

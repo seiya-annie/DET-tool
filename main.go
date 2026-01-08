@@ -5,7 +5,14 @@ import (
     "fmt"
     "log"
     "os"
+    "path/filepath"
     "time"
+
+    dbpkg "det-tool/internal/db"
+    datapkg "det-tool/internal/data"
+    querypkg "det-tool/internal/query"
+    reportpkg "det-tool/internal/report"
+    itypes "det-tool/internal/types"
 
     "github.com/spf13/pflag"
     "strings"
@@ -18,38 +25,11 @@ const (
 	CONTROL_KEYS        = "insert_rows,update_ratio,delete_ratio"
 )
 
-type Config struct {
-	Models []ModelConfig `json:"models"`
-}
-
-type ModelConfig struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Type        string                 `json:"type"`
-	Params      map[string]interface{} `json:"params"`
-	Incremental map[string]interface{} `json:"incremental"`
-}
-
-type DBConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	DBName   string `json:"db_name"`
-	Charset  string `json:"charset"`
-}
-
-type QueryResult struct {
-    QueryID              int     `json:"query_id"`
-    Query                string  `json:"query"`
-    QueryLabel           string  `json:"query_label"`
-    DurationMs           float64 `json:"duration_ms"`
-    Explain              string  `json:"explain"`
-    EstimationErrorValue float64 `json:"estimation_error_value"`
-    EstimationErrorRatio float64 `json:"estimation_error_ratio"`
-    RiskOperatorsCount   int     `json:"risk_operators_count"`
-	Model                string  `json:"model"`
-}
+// Alias core types to internal/types so existing references remain valid
+type Config = itypes.Config
+type ModelConfig = itypes.ModelConfig
+type DBConfig = itypes.DBConfig
+type QueryResult = itypes.QueryResult
 
 var (
     all          bool
@@ -65,6 +45,9 @@ var (
     dmlBatchSize int
     insertBatchSize int
     incInsertMode string
+    outputDir string
+    tmpDir string
+    reportUseActual bool
 )
 
 func init() {
@@ -81,6 +64,9 @@ func init() {
     pflag.IntVar(&dmlBatchSize, "dml-batch-size", 100, "Statements per transaction commit when executing SQL file")
     pflag.IntVar(&insertBatchSize, "insert-batch-size", 1000, "Rows per multi-row INSERT in incremental DML generation")
     pflag.StringVar(&incInsertMode, "inc-insert-mode", "insert", "Mode for incremental inserts: insert|load")
+    pflag.StringVar(&outputDir, "output-dir", "output", "Base directory for generated outputs (reports, queries, datasets, DML file)")
+    pflag.StringVar(&tmpDir, "tmp-dir", "tmp", "Directory for temporary files (incremental CSVs)")
+    pflag.BoolVar(&reportUseActual, "report-use-actual-inc", false, "Display actual modify ratio measured from incremental DML instead of target from config")
 }
 
 func main() {
@@ -103,20 +89,35 @@ func main() {
 		log.Fatalf("DB Config Error: %v", err)
 	}
 
-    dbManager := NewDBManager(*dbConfig)
+    dbManager := dbpkg.NewDBManager(*dbConfig)
     // Apply ANALYZE wait policy from CLI flags
     if analyzeWaitRetries <= 0 { analyzeWaitRetries = 20 }
     if analyzeWaitIntervalMs <= 0 { analyzeWaitIntervalMs = 1000 }
     dbManager.SetAnalyzeWaitPolicy(analyzeWaitRetries, time.Duration(analyzeWaitIntervalMs)*time.Millisecond)
     if dmlBatchSize <= 0 { dmlBatchSize = 100 }
     dbManager.SetDMLBatchSize(dmlBatchSize)
-	externalRunner := NewExternalBenchRunner(*dbConfig)
-	dataGenerator := NewDataGenerator()
-	queryBuilder := NewQueryBuilder()
+    // Prepare output directories
+    queriesDir := filepath.Join(outputDir, "queries")
+    reportsDir := filepath.Join(outputDir, "reports")
+    datasetsDir := filepath.Join(outputDir, "datasets")
+    _ = os.MkdirAll(queriesDir, 0755)
+    _ = os.MkdirAll(reportsDir, 0755)
+    _ = os.MkdirAll(datasetsDir, 0755)
+    _ = os.MkdirAll(tmpDir, 0755)
+    // Relocate default incremental DML file into output dir when not overridden
+    if sqlFile == "incremental_dml.sql" {
+        sqlFile = filepath.Join(outputDir, sqlFile)
+    }
+    externalRunner := NewExternalBenchRunner(*dbConfig)
+    // internal/data is used for generation; keep alias for clarity
+    queryBuilder := querypkg.NewQueryBuilder()
 	// [新增] 初始化 ReportGenerator
-	reportGenerator := NewReportGenerator()
+    reportGenerator := reportpkg.NewReportGenerator()
 
-	// Step 1: Base Data Generation
+    // Accumulate actual modify ratios if gen-inc runs in this process
+    actualRatios := make(map[string]float64)
+
+    // Step 1: Base Data Generation
     if genBase {
         fmt.Println("\n=== [Step 1] Base Data Generation ===")
         dbManager.InitDB(true)
@@ -127,15 +128,21 @@ func main() {
                 externalRunner.PrepareData(model)
             } else {
 				fmt.Printf("Generating base data for %s...\n", name)
-				df := dataGenerator.Generate(model)
-				fmt.Println(">>>>>> ", df.columns)
-				csvPath := fmt.Sprintf("dataset_%s_base.csv", name)
-				if err := saveDataFrameToCSV(df, csvPath); err != nil {
-					log.Printf("Error saving CSV for %s: %v", name, err)
-					continue
-				}
-				dbManager.CreateTable(name, df)
-				dbManager.LoadDataInfile(name, csvPath)
+                // Build a minimal map for internal/data generator compatibility
+                m := map[string]interface{}{
+                    "Name":        model.Name,
+                    "Type":        model.Type,
+                    "Params":      model.Params,
+                    "Incremental": model.Incremental,
+                }
+                df := datapkg.NewDataGenerator().Generate(m)
+                csvPath := filepath.Join(datasetsDir, fmt.Sprintf("dataset_%s_base.csv", name))
+                if err := saveDataFrameToCSV(df, csvPath); err != nil {
+                    log.Printf("Error saving CSV for %s: %v", name, err)
+                    continue
+                }
+                dbManager.CreateTable(name, df)
+                dbManager.LoadDataInfile(name, csvPath)
 			}
 		}
 
@@ -166,29 +173,40 @@ func main() {
 
         sqlGenerator := NewSqlGenerator()
         if insertBatchSize <= 0 { insertBatchSize = 1000 }
-        dataModifier := NewDataModifier(sqlGenerator, insertBatchSize, dbManager)
-        if incInsertMode == "load" { dataModifier.insertMode = "load" }
+        // Use internal/data modifier to build DML, then mirror to top-level DataFrame
+        dataModifier2 := datapkg.NewDataModifier(insertBatchSize, tmpDir, dbManager)
+        dataModifier2.SetInsertMode(incInsertMode)
+        // SQL logger adapter to internal/data
+        var logger datapkg.SQLLogger = &sqlLoggerAdapter{gen: sqlGenerator}
 
 		for _, model := range config.Models {
 			name := model.Name
 			if contains(EXTERNAL_MODELS, model.Type) {
 				externalRunner.RunWorkload(model)
 			} else {
-				baseCSV := fmt.Sprintf("dataset_%s_base.csv", name)
+                baseCSV := filepath.Join(datasetsDir, fmt.Sprintf("dataset_%s_base.csv", name))
 				if _, err := os.Stat(baseCSV); err == nil {
 					fmt.Printf("Applying changes to %s...\n", name)
-					df, err := loadDataFrameFromCSV(baseCSV)
-					if err != nil {
-						log.Printf("Error loading CSV for %s: %v", name, err)
-						continue
-					}
-					modifiedDF := dataModifier.Apply(df, model, name)
-					if err := saveDataFrameToCSV(modifiedDF, baseCSV); err != nil {
-						log.Printf("Error saving modified CSV for %s: %v", name, err)
-					}
-				}
-			}
-		}
+                    df, err := loadDataFrameFromCSV(baseCSV)
+                    if err != nil {
+                        log.Printf("Error loading CSV for %s: %v", name, err)
+                        continue
+                    }
+                    // Map model to generic map for internal/data modifier
+                    m := map[string]interface{}{"Name": model.Name, "Type": model.Type, "Params": model.Params, "Incremental": model.Incremental}
+                    // Apply with internal/data modifier and logger
+                    df, stats := dataModifier2.Apply(df, m, name, logger)
+                    // record actual modify ratio for report if enabled later
+                    if stats.BaseRows > 0 {
+                        ratio := float64(stats.Inserted)/float64(stats.BaseRows) + float64(stats.Updated)/float64(stats.BaseRows) + float64(stats.Deleted)/float64(stats.BaseRows)
+                        actualRatios[name] = ratio
+                    }
+                    if err := saveDataFrameToCSV(df, baseCSV); err != nil {
+                        log.Printf("Error saving modified CSV for %s: %v", name, err)
+                    }
+                }
+            }
+        }
 
 		sqlGenerator.Save(sqlFile)
 		if _, err := os.Stat(sqlFile); err == nil {
@@ -207,9 +225,9 @@ func main() {
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
 				stats := dbManager.GetTableStats(name, cols)
 
-				outfile := fmt.Sprintf("queries_%s.sql", name)
-				queryBuilder.Generate(model, name, outfile, stats)
-				fmt.Printf("Generated %s based on DB stats: %v\n", outfile, stats)
+                outfile := filepath.Join(queriesDir, fmt.Sprintf("queries_%s.sql", name))
+                queryBuilder.Generate(model, name, outfile, stats)
+                fmt.Printf("Generated %s based on DB stats: %v\n", outfile, stats)
 			}
 		}
 	}
@@ -223,19 +241,19 @@ func main() {
 		statsHealthyInfo := dbManager.GetStatsHealthy()
 		fmt.Printf("Stats healthy info: %v\n", statsHealthyInfo)
 
-        var report []QueryResult
+        var allResults []QueryResult
         for _, model := range config.Models {
             switch {
             case contains(TARGET_QUERY_MODELS, model.Type):
                 // Internal generated workload
                 name := model.Name
-                qfile := fmt.Sprintf("queries_%s.sql", name)
+                qfile := filepath.Join(queriesDir, fmt.Sprintf("queries_%s.sql", name))
                 fmt.Printf("Executing %s...\n", qfile)
                 results := dbManager.ExecuteAndExplain(qfile)
                 for i := range results {
                     results[i].Model = name
                 }
-                report = append(report, results...)
+                allResults = append(allResults, results...)
 
             case contains(EXTERNAL_MODELS, model.Type):
                 // External benchmarks: run a curated set of read-only queries on target DB
@@ -274,32 +292,32 @@ func main() {
                     for i := range results {
                         results[i].Model = label
                     }
-                    report = append(report, results...)
+                    allResults = append(allResults, results...)
                 } else {
                     fmt.Printf("No queries prepared for external model %s or missing db_name.\n", model.Name)
                 }
             }
         }
 
-		if len(report) > 0 {
-			ts := time.Now().Format("20060102_150405")
-			csvName := fmt.Sprintf("report_execution_%s.csv", ts)
-			htmlName := fmt.Sprintf("report_execution_%s.html", ts)
-			jsonName := fmt.Sprintf("report_execution_%s.json", ts)
+        if len(allResults) > 0 {
+            ts := time.Now().Format("20060102_150405")
+            csvName := filepath.Join(reportsDir, fmt.Sprintf("report_execution_%s.csv", ts))
+            htmlName := filepath.Join(reportsDir, fmt.Sprintf("report_execution_%s.html", ts))
+            jsonName := filepath.Join(reportsDir, fmt.Sprintf("report_execution_%s.json", ts))
 
-			// [修改] 使用 reportGenerator 并传入 statsHealthyInfo
-			if err := reportGenerator.GenerateCSVReport(report, csvName, config, statsHealthyInfo); err != nil {
-				log.Printf("Error generating CSV report: %v", err)
-			}
-			if err := reportGenerator.GenerateHTMLReport(report, htmlName, config, statsHealthyInfo); err != nil {
-				log.Printf("Error generating HTML report: %v", err)
-			}
-			if err := reportGenerator.GenerateJSONReport(report, jsonName, config, statsHealthyInfo); err != nil {
-				log.Printf("Error generating JSON report: %v", err)
-			}
+            // [修改] 使用 reportGenerator 并传入 statsHealthyInfo + actual/flag
+            if err := reportpkg.NewReportGenerator().GenerateCSVReport(allResults, csvName, config, statsHealthyInfo, actualRatios, reportUseActual); err != nil {
+                log.Printf("Error generating CSV report: %v", err)
+            }
+            if err := reportGenerator.GenerateHTMLReport(allResults, htmlName, config, statsHealthyInfo, actualRatios, reportUseActual); err != nil {
+                log.Printf("Error generating HTML report: %v", err)
+            }
+            if err := reportGenerator.GenerateJSONReport(allResults, jsonName, config, statsHealthyInfo, actualRatios, reportUseActual); err != nil {
+                log.Printf("Error generating JSON report: %v", err)
+            }
 
 			// [修改] 使用 reportGenerator 的方法显示 Top Queries
-			reportGenerator.DisplayTopQueries(report, 10)
+            reportGenerator.DisplayTopQueries(allResults, 10)
 		} else {
 			fmt.Println("No queries executed or no results found.")
 		}
@@ -333,21 +351,14 @@ func loadDBConfig(filename string) (*DBConfig, error) {
 }
 
 func contains(list string, item string) bool {
-	items := splitString(list, ",")
-	for _, v := range items {
-		if v == item {
-			return true
-		}
-	}
-	return false
+    if list == "" { return false }
+    for _, v := range strings.Split(list, ",") {
+        if v == item { return true }
+    }
+    return false
 }
 
-func saveDataFrameToCSV(df *DataFrame, path string) error {
-	return df.SaveCSV(path)
-}
-
-func loadDataFrameFromCSV(path string) (*DataFrame, error) {
-	return LoadDataFrameFromCSV(path)
-}
+func saveDataFrameToCSV(df *datapkg.DataFrame, path string) error { return df.SaveCSV(path) }
+func loadDataFrameFromCSV(path string) (*datapkg.DataFrame, error) { return datapkg.LoadDataFrameFromCSV(path) }
 
 // [已删除] 旧的生成报告辅助函数 (generateCSVReport, generateHTMLReport 等)，因为现在使用 reporter.go

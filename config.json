@@ -13,13 +13,13 @@
         "varchar_range": {"prefix": "user_", "suffix_range": [1, 100000]}
       },
       "incremental": {
-        "insert_rows": 1000,
+        "insert_rows": 10000,
         "update_ratio": 0.1,
         "delete_ratio": 0.05,
         "skew_weights": [0.1, 0.1, 0.1],
-        "int_range": [10001, 14000],
+        "int_range": [100001, 140000],
         "date_range": ["2025-01-01", "2025-12-31"],
-        "varchar_range": {"prefix": "user_", "suffix_range": [10001, 11000]}
+        "varchar_range": {"prefix": "user_", "suffix_range": [100001, 110000]}
       }
     },
     {
@@ -35,13 +35,13 @@
         "date_hole_range": ["2024-03-01", "2024-4-30"]
       },
       "incremental": {
-        "insert_rows": 1000,
+        "insert_rows": 10000,
         "update_ratio": 0.1,
         "delete_ratio": 0.1,
-        "int_range": [12001, 13000],
+        "int_range": [120001, 130000],
         "date_range": ["2025-01-01", "2025-12-31"],
-        "varchar_range": {"prefix": "log_", "suffix_range": [12001, 13000]},
-        "int_hole_range": [4000, 6000]
+        "varchar_range": {"prefix": "log_", "suffix_range": [120001, 130000]},
+        "int_hole_range": [40000, 60000]
       }
     },
     {
@@ -56,7 +56,7 @@
         "varchar_range": {"options": ["Active", "Inactive", "Pending", "Deleted", "Archived"]}
       },
       "incremental": {
-        "insert_rows": 2000,
+        "insert_rows": 20000,
         "update_ratio": 0.1,
         "delete_ratio": 0.05,
         "int_range": [50, 150],
