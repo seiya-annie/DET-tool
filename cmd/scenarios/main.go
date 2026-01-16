@@ -6,6 +6,7 @@ import (
     "flag"
     "fmt"
     "io/fs"
+    "math"
     "os"
     "os/exec"
     "path/filepath"
@@ -120,6 +121,13 @@ func adjustConfigForRatio(base itypes.Config, target float64, includeExternal bo
         mc.Incremental["update_ratio"] = up
         mc.Incremental["delete_ratio"] = del
         mc.Incremental["insert_rows"] = roundInt(rows * insFrac)
+
+        // If external TPCC is included, set its run time in gen-inc to ratio*10 minutes
+        if strings.HasPrefix(mc.Type, "external_tpcc") {
+            mins := int(math.Round(target * 10.0))
+            if mins < 1 { mins = 1 }
+            mc.Incremental["time"] = fmt.Sprintf("%dm", mins)
+        }
         out.Models = append(out.Models, mc)
     }
     return out
@@ -248,11 +256,16 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
     type pivotRow struct{ model, qlabel, sql string; by map[string]metrics; anyBad bool; maxBadRatio float64 }
     pivot := make(map[string]*pivotRow)
     for _, r := range allRows {
-        // Group by Model + Query Label to avoid cross-model collisions
-        key := r.Model + "|" + r.QueryLabel
+        // Group by Model + Query Label; if Query Label is empty (e.g., external tpcc),
+        // fall back to using the SQL text for grouping to avoid collapsing multiple queries.
+        glabel := r.QueryLabel
+        if strings.TrimSpace(glabel) == "" {
+            glabel = r.QuerySQL
+        }
+        key := r.Model + "|" + glabel
         pr, ok := pivot[key]
         if !ok {
-            pr = &pivotRow{model: r.Model, qlabel: r.QueryLabel, sql: r.QuerySQL, by: make(map[string]metrics)}
+            pr = &pivotRow{model: r.Model, qlabel: glabel, sql: r.QuerySQL, by: make(map[string]metrics)}
             pivot[key] = pr
         }
         // If multiple SQLs share same label, keep the first seen as a sample
@@ -342,11 +355,13 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
 <body>
   <div class="container">
     <h1>Scenario Summary</h1>
+    %LINKS%
     %PIVOT_TABLE%
   </div>
 </body>
 </html>`
 
+    html = strings.ReplaceAll(html, "%LINKS%", linksSB.String())
     html = strings.ReplaceAll(html, "%PIVOT_TABLE%", pivotSB.String())
     outFile := filepath.Join(outPath, "summary.html")
     return os.WriteFile(outFile, []byte(html), 0644)
@@ -414,12 +429,31 @@ func main() {
         os.Exit(1)
     }
 
-    parts := strings.Split(*ratiosStr, ",")
-    ratios := make([]float64, 0, len(parts))
-    for _, p := range parts {
-        var f float64
-        fmt.Sscanf(strings.TrimSpace(p), "%f", &f)
-        ratios = append(ratios, f)
+    ratios := []float64{}
+    if *ratiosStr != "" {
+        parts := strings.Split(*ratiosStr, ",")
+        ratios = make([]float64, 0, len(parts))
+        for _, p := range parts {
+            var f float64
+            fmt.Sscanf(strings.TrimSpace(p), "%f", &f)
+            ratios = append(ratios, f)
+        }
+    } else {
+        // Derive a single ratio from config's average target modify ratio when --ratios is not specified
+        avg := 0.0
+        // lightweight re-calc here mirroring report's calculateModifyRatio logic
+        for _, m := range cfg.Models {
+            if strings.HasPrefix(m.Type, "external_") { continue }
+            rows := getFloat(m.Params, "rows")
+            if rows <= 0 { rows = 1000 }
+            ins := getFloat(m.Incremental, "insert_rows") / rows
+            up := getFloat(m.Incremental, "update_ratio")
+            del := getFloat(m.Incremental, "delete_ratio")
+            avg += ins + up + del
+        }
+        if len(cfg.Models) > 0 { avg = avg / float64(len(cfg.Models)) }
+        if avg <= 0 { avg = 0.2 } // sensible default
+        ratios = []float64{avg}
     }
 
     summaries := make([]ScenarioSummary, 0, len(ratios))

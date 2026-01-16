@@ -179,31 +179,29 @@ func main() {
         // SQL logger adapter to internal/data
         var logger datapkg.SQLLogger = &sqlLoggerAdapter{gen: sqlGenerator}
 
-		for _, model := range config.Models {
-			name := model.Name
-			if contains(EXTERNAL_MODELS, model.Type) {
-				externalRunner.RunWorkload(model)
-			} else {
-                baseCSV := filepath.Join(datasetsDir, fmt.Sprintf("dataset_%s_base.csv", name))
-				if _, err := os.Stat(baseCSV); err == nil {
-					fmt.Printf("Applying changes to %s...\n", name)
-                    df, err := loadDataFrameFromCSV(baseCSV)
-                    if err != nil {
-                        log.Printf("Error loading CSV for %s: %v", name, err)
-                        continue
-                    }
-                    // Map model to generic map for internal/data modifier
-                    m := map[string]interface{}{"Name": model.Name, "Type": model.Type, "Params": model.Params, "Incremental": model.Incremental}
-                    // Apply with internal/data modifier and logger
-                    df, stats := dataModifier2.Apply(df, m, name, logger)
-                    // record actual modify ratio for report if enabled later
-                    if stats.BaseRows > 0 {
-                        ratio := float64(stats.Inserted)/float64(stats.BaseRows) + float64(stats.Updated)/float64(stats.BaseRows) + float64(stats.Deleted)/float64(stats.BaseRows)
-                        actualRatios[name] = ratio
-                    }
-                    if err := saveDataFrameToCSV(df, baseCSV); err != nil {
-                        log.Printf("Error saving modified CSV for %s: %v", name, err)
-                    }
+        // Pass 1: apply incremental DML for internal models first
+        for _, model := range config.Models {
+            if contains(EXTERNAL_MODELS, model.Type) { continue }
+            name := model.Name
+            baseCSV := filepath.Join(datasetsDir, fmt.Sprintf("dataset_%s_base.csv", name))
+            if _, err := os.Stat(baseCSV); err == nil {
+                fmt.Printf("Applying changes to %s...\n", name)
+                df, err := loadDataFrameFromCSV(baseCSV)
+                if err != nil {
+                    log.Printf("Error loading CSV for %s: %v", name, err)
+                    continue
+                }
+                // Map model to generic map for internal/data modifier
+                m := map[string]interface{}{"Name": model.Name, "Type": model.Type, "Params": model.Params, "Incremental": model.Incremental}
+                // Apply with internal/data modifier and logger
+                df, stats := dataModifier2.Apply(df, m, name, logger)
+                // record actual modify ratio for report if enabled later
+                if stats.BaseRows > 0 {
+                    ratio := float64(stats.Inserted)/float64(stats.BaseRows) + float64(stats.Updated)/float64(stats.BaseRows) + float64(stats.Deleted)/float64(stats.BaseRows)
+                    actualRatios[name] = ratio
+                }
+                if err := saveDataFrameToCSV(df, baseCSV); err != nil {
+                    log.Printf("Error saving modified CSV for %s: %v", name, err)
                 }
             }
         }
@@ -213,6 +211,19 @@ func main() {
 			fmt.Printf("Executing incremental DMLs from %s...\n", sqlFile)
 			dbManager.ExecuteSQLFile(sqlFile)
 		}
+
+        // Pass 2: run external workloads (tpcc/tpch)
+        for _, model := range config.Models {
+            if contains(EXTERNAL_MODELS, model.Type) {
+                externalRunner.RunWorkload(model)
+            }
+        }
+
+        // Allow TiDB stats to refresh before generating/executing queries
+        if genQuery || execQuery {
+            fmt.Println("Waiting 2 minutes for TiDB stats to refresh...")
+            time.Sleep(2 * time.Minute)
+        }
 	}
 
 	// Step 3: Generate Queries (Based on CURRENT DB State)
@@ -237,9 +248,27 @@ func main() {
         fmt.Println("\n=== [Step 4] Execute Queries & Report ===")
         dbManager.InitDB(false)
 
-		// [修改] 获取 Stats Healthy (现在返回 map[string]int)
-		statsHealthyInfo := dbManager.GetStatsHealthy()
-		fmt.Printf("Stats healthy info: %v\n", statsHealthyInfo)
+        // Stats healthy aggregation:
+        // - For internal models: use default DB's table health (keyed by table)
+        // - For external models (tpcc/tpch): aggregate target DB tables and map to model name using worst (min) health
+        statsHealthyInfo := map[string]int{}
+        // internal DB tables
+        internalHealth := dbManager.GetStatsHealthyForDB(dbConfig.DBName)
+        for tbl, h := range internalHealth { statsHealthyInfo[tbl] = h }
+        // external DBs
+        for _, model := range config.Models {
+            if contains(EXTERNAL_MODELS, model.Type) {
+                toolName := strings.Replace(model.Type, "external_", "", 1)
+                targetDB := ""
+                if v, ok := model.Params["db_name"]; ok { targetDB = fmt.Sprintf("%v", v) }
+                if targetDB == "" { targetDB = toolName }
+                hmap := dbManager.GetStatsHealthyForDB(targetDB)
+                worst := 100
+                for _, v := range hmap { if v < worst { worst = v } }
+                statsHealthyInfo[model.Name] = worst
+            }
+        }
+        fmt.Printf("Stats healthy info: %v\n", statsHealthyInfo)
 
         var allResults []QueryResult
         for _, model := range config.Models {
@@ -362,3 +391,59 @@ func saveDataFrameToCSV(df *datapkg.DataFrame, path string) error { return df.Sa
 func loadDataFrameFromCSV(path string) (*datapkg.DataFrame, error) { return datapkg.LoadDataFrameFromCSV(path) }
 
 // [已删除] 旧的生成报告辅助函数 (generateCSVReport, generateHTMLReport 等)，因为现在使用 reporter.go
+
+// computeModelTargetRatio computes insert/base + update + delete using config values.
+func computeModelTargetRatio(m ModelConfig) float64 {
+    params := m.Params
+    inc := m.Incremental
+    if inc == nil { return 0 }
+    baseRows := 0.0
+    if v, ok := params["rows"]; ok {
+        switch x := v.(type) {
+        case float64:
+            baseRows = x
+        case int:
+            baseRows = float64(x)
+        case string:
+            var f float64
+            fmt.Sscanf(x, "%f", &f)
+            baseRows = f
+        }
+    }
+    if baseRows <= 0 { baseRows = 1000 }
+    getF := func(key string) float64 {
+        if val, ok := inc[key]; ok {
+            switch t := val.(type) {
+            case float64:
+                return t
+            case int:
+                return float64(t)
+            case string:
+                var f float64
+                fmt.Sscanf(t, "%f", &f)
+                return f
+            }
+        }
+        return 0
+    }
+    insertRows := getF("insert_rows")
+    updateRatio := getF("update_ratio")
+    deleteRatio := getF("delete_ratio")
+    return (insertRows / baseRows) + updateRatio + deleteRatio
+}
+
+// computeAvgTargetRatio computes the average target modify ratio for non-external models.
+func computeAvgTargetRatio(cfg *Config) float64 {
+    var sum float64
+    var cnt int
+    for _, m := range cfg.Models {
+        if strings.HasPrefix(m.Type, "external_") { continue }
+        r := computeModelTargetRatio(m)
+        if r > 0 {
+            sum += r
+            cnt++
+        }
+    }
+    if cnt == 0 { return 0 }
+    return sum / float64(cnt)
+}
