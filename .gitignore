@@ -46,6 +46,8 @@ db_config.json
 dataset_*.csv
 queries_*.sql
 incremental_dml.sql
+output/
+runs/
 
 # Report files
 report_*.csv

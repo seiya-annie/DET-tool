@@ -80,6 +80,10 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 			}
 			crossEnd := holeStart + offset
 			sqls = append(sqls, fmt.Sprintf("/* LABEL: int across hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > %d AND %s < %d", tableName, tableName, colInt, crossStart, colInt, crossEnd))
+			// New: int include hole (outside the hole interval with small margins)
+			left := holeStart - 10
+			right := holeEnd + 10
+			sqls = append(sqls, fmt.Sprintf("/* LABEL: int include hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s < %d OR %s > %d", tableName, tableName, colInt, left, colInt, right))
 		}
 	}
 	var prefix string
@@ -137,8 +141,10 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime first value in first histogram */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, baseDateMin))
 	if modelType == "holes" {
 		if dateHoleRange, ok := params["date_hole_range"].([]interface{}); ok && len(dateHoleRange) >= 2 {
-			dhStartStr := fmt.Sprintf("%v", dateHoleRange[0])
-			dhEndStr := fmt.Sprintf("%v", dateHoleRange[1])
+        dhStartStr := fmt.Sprintf("%v", dateHoleRange[0])
+        dhEndStr := fmt.Sprintf("%v", dateHoleRange[1])
+        dhStartStr = strings.TrimSpace(dhStartStr)
+        dhEndStr = strings.TrimSpace(dhEndStr)
 			sqls = append(sqls, "-- [Datetime] Holes Specific Queries")
 			sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime in the hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'", tableName, tableName, colDt, dhStartStr, colDt, dhEndStr))
 			dhStart, err1 := time.Parse("2006-01-02", dhStartStr)

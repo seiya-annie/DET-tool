@@ -32,7 +32,7 @@
         "date_range": ["2024-01-01", "2024-12-31"],
         "varchar_range": {"prefix": "log_", "suffix_range": [1, 120000]},
         "int_hole_range": [40000, 60000],
-        "date_hole_range": ["2024-03-01", "2024-4-30"]
+        "date_hole_range": ["2024-03-01", "2024-04-30"]
       },
       "incremental": {
         "insert_rows": 10000,
