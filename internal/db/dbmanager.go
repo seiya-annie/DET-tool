@@ -1,16 +1,17 @@
 package db
 
 import (
-	"database/sql"
-	"encoding/csv"
-	"fmt"
-	"log"
-	"math"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
+    "database/sql"
+    "encoding/csv"
+    "fmt"
+    "log"
+    "math"
+    "os"
+    "path/filepath"
+    "os/exec"
+    "strconv"
+    "strings"
+    "time"
 
 	itypes "det-tool/internal/types"
 
@@ -498,20 +499,24 @@ func (dbm *DBManager) ExecuteAndExplain(queryFile string) []itypes.QueryResult {
 			}
 		}
 		explainRows.Close()
-		result := itypes.QueryResult{
-			QueryID:              queryID,
-			Query:                query,
-			QueryLabel:           extractQueryLabel(query),
-			DurationMs:           float64(duration),
-			Explain:              sb.String(),
-			EstimationErrorValue: maxErrorValue,
-			EstimationErrorRatio: maxErrorRatio,
-			RiskOperatorsCount:   riskCount,
-		}
-		results = append(results, result)
-		queryID++
-	}
-	return results
+        result := itypes.QueryResult{
+            QueryID:              queryID,
+            Query:                query,
+            QueryLabel:           extractQueryLabel(query),
+            DurationMs:           float64(duration),
+            Explain:              sb.String(),
+            EstimationErrorValue: maxErrorValue,
+            EstimationErrorRatio: maxErrorRatio,
+            RiskOperatorsCount:   riskCount,
+        }
+        // If this is a bad case, try to generate plan replayer dump and capture link
+        if maxErrorRatio >= 10 && maxErrorValue >= 1000 {
+            if link := dbm.dumpPlanReplayer(query); link != "" { result.PlanReplayerLink = link }
+        }
+        results = append(results, result)
+        queryID++
+    }
+    return results
 }
 
 // ExecuteAndExplainQueriesOnDB executes a list of raw SQL queries on the given database name
@@ -606,21 +611,68 @@ func (dbm *DBManager) ExecuteAndExplainQueriesOnDB(targetDB string, queries []st
 			}
 		}
 		explainRows.Close()
-		res := itypes.QueryResult{
-			QueryID:              queryID,
-			Query:                q,
-			QueryLabel:           extractQueryLabel(q),
-			DurationMs:           float64(duration),
-			Explain:              sb.String(),
-			EstimationErrorValue: maxErrorValue,
-			EstimationErrorRatio: maxErrorRatio,
-			RiskOperatorsCount:   riskCount,
-		}
-		results = append(results, res)
-		queryID++
-	}
-	_, _ = dbm.db.Exec(fmt.Sprintf("USE `%s`", dbm.config.DBName))
-	return results
+        res := itypes.QueryResult{
+            QueryID:              queryID,
+            Query:                q,
+            QueryLabel:           extractQueryLabel(q),
+            DurationMs:           float64(duration),
+            Explain:              sb.String(),
+            EstimationErrorValue: maxErrorValue,
+            EstimationErrorRatio: maxErrorRatio,
+            RiskOperatorsCount:   riskCount,
+        }
+        if maxErrorRatio >= 10 && maxErrorValue >= 1000 {
+            if link := dbm.dumpPlanReplayer(q); link != "" { res.PlanReplayerLink = link }
+        }
+        results = append(results, res)
+        queryID++
+    }
+    _, _ = dbm.db.Exec(fmt.Sprintf("USE `%s`", dbm.config.DBName))
+    return results
+}
+
+// dumpPlanReplayer runs TiDB plan replayer for the given SQL and tries to download the dump file.
+// Returns a link (relative path under output/planreplayer or HTTP URL) to be used in reports.
+func (dbm *DBManager) dumpPlanReplayer(sqlText string) string {
+    // 1) Execute plan replayer dump explain <sql>
+    stmt := fmt.Sprintf("plan replayer dump explain %s", sqlText)
+    if _, err := dbm.db.Exec(stmt); err != nil {
+        fmt.Printf("      [PlanReplayer] dump explain failed: %v\n", err)
+        return ""
+    }
+    // 2) Fetch last token
+    var token sql.NullString
+    if err := dbm.db.QueryRow("SELECT @@tidb_last_plan_replayer_token").Scan(&token); err != nil || !token.Valid {
+        fmt.Printf("      [PlanReplayer] fetch token failed: %v\n", err)
+        return ""
+    }
+    t := strings.TrimSpace(token.String)
+    if t == "" {
+        return ""
+    }
+    // 3) Build download URL and try to curl
+    statusPort := dbm.config.StatusPort
+    if statusPort == 0 { statusPort = 10080 }
+    url := fmt.Sprintf("http://%s:%d/plan_replayer/dump/%s", dbm.config.Host, statusPort, t)
+    // Ensure output directory exists
+    destDir := filepath.Join("output", "planreplayer")
+    _ = os.MkdirAll(destDir, 0755)
+    // Determine file name; TiDB may already include .zip in token
+    fileName := t
+    low := strings.ToLower(fileName)
+    if !strings.HasSuffix(low, ".zip") {
+        fileName = fileName + ".zip"
+    }
+    destPath := filepath.Join(destDir, fileName)
+    cmd := exec.Command("curl", "-sS", "-o", destPath, url)
+    if out, err := cmd.CombinedOutput(); err != nil {
+        fmt.Printf("      [PlanReplayer] curl download failed: %v, output=%s\n", err, string(out))
+        // Fallback to URL if cannot download
+        return url
+    }
+    // Return relative link from report dir if possible: ../planreplayer/<token>.zip
+    rel := filepath.ToSlash(filepath.Join("..", "planreplayer", fileName))
+    return rel
 }
 
 // GetTableStats gets statistics for specified columns
@@ -690,6 +742,37 @@ func (dbm *DBManager) GetStatsHealthyForDB(dbName string) map[string]int {
 		}
 	}
 	return result
+}
+
+// DumpStatsMetaForDB prints SHOW STATS_META rows for a specific database.
+// This helps correlate TiDB's modify_count (key-level) with our line-level changes.
+func (dbm *DBManager) DumpStatsMetaForDB(dbName string) {
+    if strings.TrimSpace(dbName) == "" {
+        return
+    }
+    dbm.EnsureConnection()
+    query := fmt.Sprintf("SHOW STATS_META WHERE Db_name = '%s'", dbName)
+    rows, err := dbm.db.Query(query)
+    if err != nil {
+        fmt.Printf("[DB] SHOW STATS_META failed for %s: %v\n", dbName, err)
+        return
+    }
+    defer rows.Close()
+    fmt.Printf("\n[DB] STATS_META for DB=%s\n", dbName)
+    fmt.Println("Db_name | Table_name | Partition_name | Update_time | Modify_count | Row_count | Last_analyze_time")
+    for rows.Next() {
+        var dbNameRes, tableName, partition, updateTime, modifyCount, rowCount, lastAnalyze sql.NullString
+        if err := rows.Scan(&dbNameRes, &tableName, &partition, &updateTime, &modifyCount, &rowCount, &lastAnalyze); err != nil {
+            // Fallback: try fewer columns if TiDB version differs
+            var db2, tbl2, part2 sql.NullString
+            var upd2, mod2, row2, last2 sql.NullString
+            _ = rows.Scan(&db2, &tbl2, &part2, &upd2, &mod2, &row2, &last2)
+            dbNameRes, tableName, partition, updateTime, modifyCount, rowCount, lastAnalyze = db2, tbl2, part2, upd2, mod2, row2, last2
+        }
+        val := func(ns sql.NullString) string { if ns.Valid { return ns.String } ; return "NULL" }
+        fmt.Printf("%s | %s | %s | %s | %s | %s | %s\n",
+            val(dbNameRes), val(tableName), val(partition), val(updateTime), val(modifyCount), val(rowCount), val(lastAnalyze))
+    }
 }
 
 // GetRandomIDs fetches N random primary keys (id) from a table

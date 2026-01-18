@@ -37,7 +37,7 @@ func (rg *ReportGenerator) GenerateCSVReport(results []itypes.QueryResult, filen
     w := csv.NewWriter(file)
     defer w.Flush()
 
-    headers := []string{"Model", "Stats Healthy", "Modify Ratio", "Query Label", "Est Error Ratio", "Est Error Value", "Query SQL", "Duration (ms)", "Explain Plan", "Risk Operators Count"}
+    headers := []string{"Model", "Stats Healthy", "Modify Ratio", "Query Label", "Est Error Ratio", "Est Error Value", "Query SQL", "Duration (ms)", "Explain Plan", "Plan Replayer"}
     if err := w.Write(headers); err != nil { return fmt.Errorf("failed to write CSV header: %v", err) }
 
     sorted := rg.sortResults(results)
@@ -54,7 +54,7 @@ func (rg *ReportGenerator) GenerateCSVReport(results []itypes.QueryResult, filen
             r.Query,
             fmt.Sprintf("%.3f", r.DurationMs),
             r.Explain,
-            fmt.Sprintf("%d", r.RiskOperatorsCount),
+            r.PlanReplayerLink,
         }
         if err := w.Write(row); err != nil { return fmt.Errorf("failed to write CSV row: %v", err) }
     }
@@ -371,7 +371,7 @@ func (rg *ReportGenerator) generateHTMLContent(results []itypes.QueryResult, con
                     <th>Query SQL</th>
                     <th>Duration (ms)</th>
                     <th>Explain Plan</th>
-                    <th>Risk Ops</th>
+                    <th>Plan Replayer</th>
                 </tr>
             </thead>
             <tbody>
@@ -447,7 +447,7 @@ func (rg *ReportGenerator) generateTableRows(results []itypes.QueryResult, confi
                     <td class="query-cell">%s</td>
                     <td class="numeric-cell">%.3f</td>
                     <td class="explain-cell">%s</td>
-                    <td class="numeric-cell">%d</td>
+                    <td class="numeric-cell">%s</td>
                 </tr>`,
             rowClass,
             escapeHTML(r.Model),
@@ -459,7 +459,7 @@ func (rg *ReportGenerator) generateTableRows(results []itypes.QueryResult, confi
             escapeHTML(truncateString(r.Query, 200)),
             r.DurationMs,
             escapeHTML(r.Explain),
-            r.RiskOperatorsCount,
+            escapeHTML(r.PlanReplayerLink),
         ))
     }
     return b.String()

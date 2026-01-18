@@ -19,6 +19,7 @@ type DBConfig struct {
     Password string `json:"password"`
     DBName   string `json:"db_name"`
     Charset  string `json:"charset"`
+    StatusPort int   `json:"status_port,omitempty"`
 }
 
 type QueryResult struct {
@@ -31,5 +32,5 @@ type QueryResult struct {
     EstimationErrorRatio float64 `json:"estimation_error_ratio"`
     RiskOperatorsCount   int     `json:"risk_operators_count"`
     Model                string  `json:"model"`
+    PlanReplayerLink     string  `json:"plan_replayer_link,omitempty"`
 }
-

@@ -116,6 +116,9 @@ func main() {
 
     // Accumulate actual modify ratios if gen-inc runs in this process
     actualRatios := make(map[string]float64)
+    // Collect line-level change stats per model for Step2 logging
+    type incStats struct{ Inserted, Updated, Deleted, BaseRows int }
+    appliedStats := make(map[string]incStats)
 
     // Step 1: Base Data Generation
     if genBase {
@@ -200,6 +203,8 @@ func main() {
                     ratio := float64(stats.Inserted)/float64(stats.BaseRows) + float64(stats.Updated)/float64(stats.BaseRows) + float64(stats.Deleted)/float64(stats.BaseRows)
                     actualRatios[name] = ratio
                 }
+                // record raw line-level stats for Step2 summary logging
+                appliedStats[name] = incStats{Inserted: stats.Inserted, Updated: stats.Updated, Deleted: stats.Deleted, BaseRows: stats.BaseRows}
                 if err := saveDataFrameToCSV(df, baseCSV); err != nil {
                     log.Printf("Error saving modified CSV for %s: %v", name, err)
                 }
@@ -219,12 +224,29 @@ func main() {
             }
         }
 
+        // Step 2 summary logging: line-level stats and SHOW STATS_META snapshot
+        fmt.Println("\n--- [Step 2] Incremental Data Summary (line-level) ---")
+        if len(appliedStats) == 0 {
+            fmt.Println("No internal models were updated in this step.")
+        } else {
+            for name, s := range appliedStats {
+                ratio := 0.0
+                if s.BaseRows > 0 {
+                    ratio = float64(s.Inserted+s.Updated+s.Deleted) / float64(s.BaseRows)
+                }
+                fmt.Printf("Model=%s | BaseRows=%d, Inserted=%d, Updated=%d, Deleted=%d | ModifyRatio(line-level)=%.4f\n",
+                    name, s.BaseRows, s.Inserted, s.Updated, s.Deleted, ratio)
+            }
+        }
+        // Print STATS_META for default DB to correlate key-level modify_count with line-level changes
+        dbManager.DumpStatsMetaForDB(dbConfig.DBName)
+
         // Allow TiDB stats to refresh before generating/executing queries
         if genQuery || execQuery {
             fmt.Println("Waiting 2 minutes for TiDB stats to refresh...")
             time.Sleep(2 * time.Minute)
         }
-	}
+    }
 
 	// Step 3: Generate Queries (Based on CURRENT DB State)
 	if genQuery {
