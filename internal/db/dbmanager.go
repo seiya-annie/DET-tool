@@ -147,12 +147,21 @@ func (dbm *DBManager) CreateTable(tableName string, df Frame, partitionClause st
 		indexes = append(indexes, fmt.Sprintf("KEY `idx_%s` (`%s`)", colName, colName))
 	}
 	cols = append([]string{"`id` bigint NOT NULL AUTO_INCREMENT"}, cols...)
+	pkCols := []string{"`id`"}
+	if pkProvider, ok := df.(interface{ PrimaryKeys() []string }); ok {
+		if pks := pkProvider.PrimaryKeys(); len(pks) > 0 {
+			pkCols = pkCols[:0]
+			for _, c := range pks {
+				pkCols = append(pkCols, fmt.Sprintf("`%s`", c))
+			}
+		}
+	}
 	ddl := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
         %s,
         %s,
-        PRIMARY KEY (`+"`id`"+`)
+        PRIMARY KEY (%s)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin %s`,
-		tableName, strings.Join(cols, ", "), strings.Join(indexes, ", "), strings.TrimSpace(partitionClause))
+		tableName, strings.Join(cols, ", "), strings.Join(indexes, ", "), strings.Join(pkCols, ", "), strings.TrimSpace(partitionClause))
 	fmt.Println(ddl)
 	_, err := dbm.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 	if err != nil {

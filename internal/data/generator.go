@@ -201,7 +201,9 @@ func (dg *DataGenerator) generatePartitionSkew(params map[string]interface{}) *D
 	}
 
 	part := BuildMonthlyPartitionClause(monthStarts, colDatetime)
-	return df.Sample(1.0).ResetIndex(true).WithPartitionClause(part)
+	// Include partition key in PK to satisfy clustered index + partition constraints
+	pks := []string{"id", colDatetime}
+	return df.Sample(1.0).ResetIndex(true).WithPartitionClause(part).WithPrimaryKeys(pks)
 }
 
 func (dg *DataGenerator) generateIntColumn(df *DataFrame, colName string, modelType string, start, end, rows int, params map[string]interface{}) {

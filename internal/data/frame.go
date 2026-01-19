@@ -13,6 +13,7 @@ type DataFrame struct {
 	columns         []string
 	data            [][]interface{}
 	partitionClause string
+	primaryKeys     []string
 }
 
 func NewDataFrame() *DataFrame {
@@ -50,6 +51,17 @@ func (df *DataFrame) PartitionClause() string { return df.partitionClause }
 // WithPartitionClause attaches a raw partition clause to the frame (used by generators needing custom DDL)
 func (df *DataFrame) WithPartitionClause(clause string) *DataFrame {
 	df.partitionClause = clause
+	return df
+}
+
+// PrimaryKeys returns an optional list of primary key column names (quoted later by caller).
+func (df *DataFrame) PrimaryKeys() []string {
+	return df.primaryKeys
+}
+
+// WithPrimaryKeys sets primary key columns for custom schemas (e.g., partitioned tables).
+func (df *DataFrame) WithPrimaryKeys(keys []string) *DataFrame {
+	df.primaryKeys = keys
 	return df
 }
 
