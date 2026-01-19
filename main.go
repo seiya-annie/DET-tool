@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	INTERNAL_MODELS     = "skew,holes,low_card"
+	INTERNAL_MODELS     = "skew,holes,low_card,partition_skew"
 	EXTERNAL_MODELS     = "external_tpcc,external_tpch"
-	TARGET_QUERY_MODELS = "skew,holes,low_card"
+	TARGET_QUERY_MODELS = "skew,holes,low_card,partition_skew"
 	CONTROL_KEYS        = "insert_rows,update_ratio,delete_ratio"
 )
 
