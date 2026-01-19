@@ -211,7 +211,8 @@ func (sg *SqlGenerator) LogComment(comment string) {
 func (sg *SqlGenerator) LogEmptyLine() { sg.statements = append(sg.statements, "") }
 func (sg *SqlGenerator) Save(filename string) error {
 	if len(sg.statements) == 0 {
-		return nil
+		// Truncate file to avoid reusing stale SQL from previous runs
+		return os.WriteFile(filename, []byte{}, 0644)
 	}
 	return os.WriteFile(filename, []byte(strings.Join(sg.statements, "\n")), 0644)
 }

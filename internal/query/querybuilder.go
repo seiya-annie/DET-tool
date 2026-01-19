@@ -31,6 +31,11 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 	colInt := fmt.Sprintf("%s_int", tableName)
 	colStr := fmt.Sprintf("%s_varchar", tableName)
 	colDt := fmt.Sprintf("%s_datetime", tableName)
+	if strings.EqualFold(modelType, "partition_skew") {
+		colInt = "partition_skew_id"
+		colStr = "partition_skew_varchar"
+		colDt = "partition_skew_datetime"
+	}
 	var minInt, maxInt int
 	if currentStats != nil {
 		if s, ok := currentStats[colInt]; ok {
@@ -120,18 +125,20 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 		baseDateMin = fmt.Sprintf("%v", dateRange[0])
 		baseDateMax = fmt.Sprintf("%v", dateRange[1])
 	}
-    // For adaptive queries, use baseDateMin for start; prefer currentStats max as end if present, else baseDateMax
-    dateMin = baseDateMin
-    if dateMax == "" { dateMax = baseDateMax }
-    // Guard: ensure dateMax is a valid date; otherwise fall back to baseDateMax
-    if _, err := time.Parse("2006-01-02", strings.TrimSpace(dateMax)); err != nil {
-        dateMax = baseDateMax
-    }
+	// For adaptive queries, use baseDateMin for start; prefer currentStats max as end if present, else baseDateMax
+	dateMin = baseDateMin
+	if dateMax == "" {
+		dateMax = baseDateMax
+	}
+	// Guard: ensure dateMax is a valid date; otherwise fall back to baseDateMax
+	if _, err := time.Parse("2006-01-02", strings.TrimSpace(dateMax)); err != nil {
+		dateMax = baseDateMax
+	}
 	dtMin, err := time.Parse("2006-01-02", dateMin)
 	if err != nil {
 		dtMin = time.Now().AddDate(-1, 0, 0)
 	}
-    sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s'", tableName, tableName, colDt, dateMax))
+	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s'", tableName, tableName, colDt, dateMax))
 	dtEq := dtMin.AddDate(0, 0, 1).Format("2006-01-02")
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, dtEq))
 	dtRangeEnd := dtMin.AddDate(0, 0, 30).Format("2006-01-02")
@@ -141,10 +148,10 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime first value in first histogram */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, baseDateMin))
 	if modelType == "holes" {
 		if dateHoleRange, ok := params["date_hole_range"].([]interface{}); ok && len(dateHoleRange) >= 2 {
-        dhStartStr := fmt.Sprintf("%v", dateHoleRange[0])
-        dhEndStr := fmt.Sprintf("%v", dateHoleRange[1])
-        dhStartStr = strings.TrimSpace(dhStartStr)
-        dhEndStr = strings.TrimSpace(dhEndStr)
+			dhStartStr := fmt.Sprintf("%v", dateHoleRange[0])
+			dhEndStr := fmt.Sprintf("%v", dateHoleRange[1])
+			dhStartStr = strings.TrimSpace(dhStartStr)
+			dhEndStr = strings.TrimSpace(dhEndStr)
 			sqls = append(sqls, "-- [Datetime] Holes Specific Queries")
 			sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime in the hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'", tableName, tableName, colDt, dhStartStr, colDt, dhEndStr))
 			dhStart, err1 := time.Parse("2006-01-02", dhStartStr)

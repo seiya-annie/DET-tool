@@ -174,6 +174,8 @@ func main() {
 				dbManager.AnalyzeAllTablesInDB(targetDB)
 			}
 		}
+		// Snapshot STATS_META after all ANALYZE
+		dbManager.DumpStatsMetaForDB(dbConfig.DBName)
 	}
 
 	// Step 2: Incremental Data Generation & Execution
@@ -212,7 +214,7 @@ func main() {
 				// Map model to generic map for internal/data modifier
 				m := map[string]interface{}{"Name": model.Name, "Type": model.Type, "Params": model.Params, "Incremental": model.Incremental}
 				// Apply with internal/data modifier and logger
-				df, stats := dataModifier2.Apply(df, m, name, logger)
+				df1, stats := dataModifier2.Apply(df, m, name, logger)
 				// record actual modify ratio for report if enabled later
 				if stats.BaseRows > 0 {
 					ratio := float64(stats.Inserted)/float64(stats.BaseRows) + float64(stats.Updated)/float64(stats.BaseRows) + float64(stats.Deleted)/float64(stats.BaseRows)
@@ -220,7 +222,7 @@ func main() {
 				}
 				// record raw line-level stats for Step2 summary logging
 				appliedStats[name] = incStats{Inserted: stats.Inserted, Updated: stats.Updated, Deleted: stats.Deleted, BaseRows: stats.BaseRows}
-				if err := saveDataFrameToCSV(df, baseCSV); err != nil {
+				if err := saveDataFrameToCSV(df1, baseCSV); err != nil {
 					log.Printf("Error saving modified CSV for %s: %v", name, err)
 				}
 			}
@@ -228,8 +230,17 @@ func main() {
 
 		sqlGenerator.Save(sqlFile)
 		if _, err := os.Stat(sqlFile); err == nil {
-			fmt.Printf("Executing incremental DMLs from %s...\n", sqlFile)
-			dbManager.ExecuteSQLFile(sqlFile)
+			if info, err := os.Stat(sqlFile); err == nil {
+				fmt.Printf("Executing incremental DMLs from %s (size=%d bytes)...\n", sqlFile, info.Size())
+				if info.Size() == 0 {
+					fmt.Println("    [DB] File is empty, skip executing incremental DMLs.")
+				} else {
+					dbManager.ExecuteSQLFile(sqlFile)
+				}
+			} else {
+				fmt.Printf("Executing incremental DMLs from %s...\n", sqlFile)
+				dbManager.ExecuteSQLFile(sqlFile)
+			}
 		}
 
 		// Pass 2: run external workloads (tpcc/tpch)
@@ -271,6 +282,9 @@ func main() {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
+				if strings.EqualFold(model.Type, "partition_skew") {
+					cols = []string{"partition_skew_id", "partition_skew_datetime"}
+				}
 				stats := dbManager.GetTableStats(name, cols)
 
 				outfile := filepath.Join(queriesDir, fmt.Sprintf("queries_%s.sql", name))
