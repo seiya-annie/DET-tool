@@ -253,7 +253,17 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
 
     // Build Pivot table grouped by Query Label (instead of raw SQL)
     type metrics struct{ stats int; mod float64; ratio float64; value float64; bad bool }
-    type pivotRow struct{ model, qlabel, sql string; by map[string]metrics; anyBad bool; maxBadRatio float64 }
+    type pivotRow struct {
+        model        string
+        qlabel       string
+        sql          string
+        by           map[string]metrics
+        anyBad       bool
+        maxBadRatio  float64
+        maxErrRatio  float64
+        maxErrValue  float64
+        maxErrLabel  string
+    }
     pivot := make(map[string]*pivotRow)
     for _, r := range allRows {
         // Group by Model + Query Label; if Query Label is empty (e.g., external tpcc),
@@ -277,6 +287,11 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
             pr.anyBad = true
             if m.ratio > pr.maxBadRatio { pr.maxBadRatio = m.ratio }
         }
+        if m.ratio > pr.maxErrRatio {
+            pr.maxErrRatio = m.ratio
+            pr.maxErrValue = m.value
+            pr.maxErrLabel = r.Label
+        }
     }
     // Color palette for ratio columns (cycled when labels exceed palette)
     colors := []string{"#FFF3E0", "#E3F2FD", "#F1F8E9", "#FCE4EC", "#EDE7F6", "#E0F7FA", "#E8EAF6", "#F3E5F5"}
@@ -284,7 +299,7 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
     // Emit HTML table
     var pivotSB strings.Builder
     pivotSB.WriteString("<table>\n<thead><tr>")
-    pheaders := []string{"Model", "Query Label"}
+    pheaders := []string{"Model", "Query Label", "Bug?", "Issue"}
     for _, h := range pheaders { pivotSB.WriteString("<th>" + h + "</th>") }
     for _, lab := range labelsOrder {
         pivotSB.WriteString("<th>StatsHealthy_" + lab + "</th>")
@@ -310,6 +325,20 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
         pivotSB.WriteString("<tr>")
         pivotSB.WriteString("<td>" + escapeHTML(pr.model) + "</td>")
         pivotSB.WriteString("<td>" + escapeHTML(pr.qlabel) + "</td>")
+        pivotSB.WriteString("<td><select class=\"bug-select\" onchange=\"onBugSelect(this)\">" +
+            "<option value=\"\">Unconfirmed</option>" +
+            "<option value=\"bug\">Bug</option>" +
+            "<option value=\"no\">Not Bug</option>" +
+            "</select></td>")
+        pivotSB.WriteString(fmt.Sprintf("<td><button class=\"issue-btn\" onclick=\"createIssue(this)\" disabled "+
+            "data-model=\"%s\" data-qlabel=\"%s\" data-sql=\"%s\" data-err-ratio=\"%.2f\" data-err-value=\"%.2f\" data-ratio-label=\"%s\">Create Issue</button></td>",
+            escapeHTML(pr.model),
+            escapeHTML(pr.qlabel),
+            escapeHTML(pr.sql),
+            pr.maxErrRatio,
+            pr.maxErrValue,
+            escapeHTML(pr.maxErrLabel),
+        ))
         for i, lab := range labelsOrder {
             bg := colors[i%len(colors)]
             m, ok := pr.by[lab]
@@ -345,19 +374,168 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
     h1 { margin-top: 0; }
     h2 { margin-top: 28px; }
     ul { line-height: 1.8; }
+    .actions { margin: 16px 0 10px; padding: 12px; border: 1px solid #e5e5e5; border-radius: 6px; background: #f8fbff; }
+    .actions label { margin-right: 12px; font-size: 12px; }
+    .actions input { margin-left: 6px; padding: 4px 6px; font-size: 12px; }
+    .actions small { display: block; margin-top: 6px; color: #666; }
     table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12px; }
     th, td { border: 1px solid #e5e5e5; padding: 6px 8px; text-align: left; vertical-align: top; }
     th { background: #4CAF50; color: #fff; position: sticky; top: 0; }
     tr:nth-child(even) { background: #fafafa; }
+    tr.is-bug { background: #fff4e5; }
     .sql { font-family: Consolas, Menlo, Monaco, 'Courier New', monospace; white-space: pre-wrap; word-break: normal; overflow-wrap: anywhere; min-width: 40ch; }
+    .bug-select { font-size: 12px; }
+    .issue-btn { font-size: 12px; padding: 4px 8px; background: #1976d2; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    .issue-btn:disabled { background: #9e9e9e; cursor: not-allowed; }
+    .issue-created { background: #2e7d32; }
   </style>
   </head>
 <body>
   <div class="container">
     <h1>Scenario Summary</h1>
+    <div class="actions">
+      <label>GitHub Repo<input id="gh-repo" class="gh-setting" placeholder="owner/repo" /></label>
+      <label>Token<input id="gh-token" class="gh-setting" type="password" placeholder="optional" /></label>
+      <label>Labels<input id="gh-labels" class="gh-setting" placeholder="bug,det-tool" /></label>
+      <small>If token is set, issues are created via GitHub API; otherwise the button opens a prefilled issue page.</small>
+    </div>
     %LINKS%
     %PIVOT_TABLE%
   </div>
+  <script>
+    function byId(id) { return document.getElementById(id); }
+    function saveSettings() {
+      try {
+        var repo = byId('gh-repo').value.trim();
+        var token = byId('gh-token').value.trim();
+        var labels = byId('gh-labels').value.trim();
+        if (repo) { localStorage.setItem('dettool_gh_repo', repo); } else { localStorage.removeItem('dettool_gh_repo'); }
+        if (token) { localStorage.setItem('dettool_gh_token', token); } else { localStorage.removeItem('dettool_gh_token'); }
+        if (labels) { localStorage.setItem('dettool_gh_labels', labels); } else { localStorage.removeItem('dettool_gh_labels'); }
+      } catch (e) {}
+    }
+    function loadSettings() {
+      try {
+        var repo = localStorage.getItem('dettool_gh_repo') || '';
+        var token = localStorage.getItem('dettool_gh_token') || '';
+        var labels = localStorage.getItem('dettool_gh_labels') || '';
+        byId('gh-repo').value = repo;
+        byId('gh-token').value = token;
+        byId('gh-labels').value = labels;
+      } catch (e) {}
+    }
+    function onBugSelect(sel) {
+      var tr = sel.closest('tr');
+      if (!tr) { return; }
+      var btn = tr.querySelector('.issue-btn');
+      if (btn) { btn.disabled = (sel.value !== 'bug'); }
+      if (sel.value === 'bug') { tr.classList.add('is-bug'); } else { tr.classList.remove('is-bug'); }
+    }
+    function parseLabels(s) {
+      if (!s) { return []; }
+      var parts = s.split(',');
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        var v = parts[i].trim();
+        if (v) { out.push(v); }
+      }
+      return out;
+    }
+    function buildIssueData(btn) {
+      var model = btn.getAttribute('data-model') || '';
+      var qlabel = btn.getAttribute('data-qlabel') || '';
+      var sql = btn.getAttribute('data-sql') || '';
+      var ratio = btn.getAttribute('data-err-ratio') || '';
+      var value = btn.getAttribute('data-err-value') || '';
+      var label = btn.getAttribute('data-ratio-label') || '';
+      var titleLabel = qlabel;
+      if (titleLabel.length > 80) { titleLabel = titleLabel.slice(0, 77) + '...'; }
+      var title = 'det-tool issue';
+      if (model && qlabel) {
+        title = model + '-' + titleLabel;
+      } else if (model) {
+        title = model;
+      } else if (qlabel) {
+        title = titleLabel;
+      }
+      if (label) { title += '-' + label + '%'; }
+      var ratioLabel = label ? (label + '%') : 'n/a';
+      var fence = String.fromCharCode(96) + String.fromCharCode(96) + String.fromCharCode(96);
+      var fenceSql = fence + 'sql';
+      var body = [
+        '### Summary',
+        '- Model: ' + model,
+        '- Query Label: ' + qlabel,
+        '- Worst Ratio Label: ' + ratioLabel,
+        '- Est Error Ratio: ' + ratio,
+        '- Est Error Value: ' + value,
+        '',
+        '### SQL',
+        fenceSql,
+        sql,
+        fence,
+        '',
+        '### Notes',
+        '- Marked as bug in summary.html'
+      ].join('\n');
+      return { title: title, body: body };
+    }
+    function openPrefilledIssue(repo, title, body, labels) {
+      var url = 'https://github.com/' + repo + '/issues/new?title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
+      if (labels) { url += '&labels=' + encodeURIComponent(labels); }
+      window.open(url, '_blank');
+    }
+    function createIssue(btn) {
+      var repo = byId('gh-repo').value.trim();
+      if (!repo) { alert('Set GitHub repo (owner/repo)'); return; }
+      var token = byId('gh-token').value.trim();
+      var labels = byId('gh-labels').value.trim();
+      var data = buildIssueData(btn);
+      if (!token) {
+        openPrefilledIssue(repo, data.title, data.body, labels);
+        return;
+      }
+      var payload = { title: data.title, body: data.body };
+      var labs = parseLabels(labels);
+      if (labs.length > 0) { payload.labels = labs; }
+      var oldText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+      fetch('https://api.github.com/repos/' + repo + '/issues', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/vnd.github+json',
+          'Authorization': 'Bearer ' + token
+        },
+        body: JSON.stringify(payload)
+      }).then(function(r) {
+        return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+      }).then(function(res) {
+        if (!res.ok) {
+          alert('Create issue failed: ' + (res.data && res.data.message ? res.data.message : 'unknown error'));
+          btn.disabled = false;
+          btn.textContent = oldText;
+          return;
+        }
+        btn.textContent = 'Created';
+        btn.classList.add('issue-created');
+        if (res.data && res.data.html_url) {
+          window.open(res.data.html_url, '_blank');
+        }
+      }).catch(function(err) {
+        alert('Create issue failed: ' + err);
+        btn.disabled = false;
+        btn.textContent = oldText;
+      });
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+      loadSettings();
+      var inputs = document.querySelectorAll('.gh-setting');
+      for (var i = 0; i < inputs.length; i++) {
+        inputs[i].addEventListener('input', saveSettings);
+      }
+    });
+  </script>
 </body>
 </html>`
 

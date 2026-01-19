@@ -105,8 +105,10 @@ func (dm *DataModifier) applyInserts(df *DataFrame, modelConfig map[string]inter
 
 func (dm *DataModifier) applyUpdates(df *DataFrame, modelConfig map[string]interface{}, tableName string, updateRatio float64, logger SQLLogger) (*DataFrame, int) {
     if updateRatio <= 0 || updateRatio > 1 { return df, 0 }
+    // Exclude a special int column from updates when present (legacy models use <table>_int).
+    // If not present (e.g., custom schemas), update all columns.
     idColumn := fmt.Sprintf("%s_int", tableName)
-    idColIndex := getColumnIndex(df, idColumn); if idColIndex == -1 { return df, 0 }
+    idColIndex := getColumnIndex(df, idColumn)
     valid := []int{}
     for i, row := range df.data { if idColIndex < len(row) && row[idColIndex] != nil { valid = append(valid, i) } }
     if len(valid) == 0 { return df, 0 }
@@ -119,7 +121,11 @@ func (dm *DataModifier) applyUpdates(df *DataFrame, modelConfig map[string]inter
     if inc, ok := modelConfig["Incremental"].(map[string]interface{}); ok { for k, v := range inc { if k != "insert_rows" && k != "update_ratio" && k != "delete_ratio" { cfg["Params"].(map[string]interface{})[k] = v } } }
     gen := NewDataGenerator(); updateData := gen.Generate(cfg)
     columnNames := make([]string, 0, len(df.columns))
-    for _, c := range df.columns { if c != idColumn { columnNames = append(columnNames, c) } }
+    if idColIndex >= 0 {
+        for _, c := range df.columns { if c != idColumn { columnNames = append(columnNames, c) } }
+    } else {
+        for _, c := range df.columns { columnNames = append(columnNames, c) }
+    }
     var ids []int64
     if dm.dbm != nil { ids = dm.dbm.GetRandomIDs(tableName, updateCount) }
     tmp := NewDataFrame(); tmp.AddColumn("id"); for _, c := range df.columns { tmp.AddColumn(c) }
