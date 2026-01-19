@@ -1,22 +1,22 @@
 package main
 
 import (
-    "crypto/sha1"
-    "database/sql"
-    "encoding/json"
-    "flag"
-    "fmt"
-    "io"
-    "os"
-    "os/exec"
-    "path/filepath"
-    "regexp"
-    "sort"
-    "strings"
-    "time"
+	"crypto/sha1"
+	"database/sql"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
 
-    itypes "det-tool/internal/types"
-    _ "github.com/go-sql-driver/mysql"
+	itypes "det-tool/internal/types"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 // minimal struct mirroring cmd/scenarios report JSON
@@ -149,6 +149,39 @@ func sanitizeFileName(s string) string {
 	return re.ReplaceAllString(s, "")
 }
 
+func extractStatsMetaFromLog(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(b), "\n")
+	in := false
+	out := make([]string, 0, 8)
+	for _, line := range lines {
+		if strings.HasPrefix(line, "[DB] STATS_META for DB=") {
+			in = true
+			out = append(out, line)
+			continue
+		}
+		if in {
+			if strings.TrimSpace(line) == "" {
+				if len(out) > 0 {
+					break
+				}
+				continue
+			}
+			if !strings.Contains(line, " | ") {
+				break
+			}
+			out = append(out, line)
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return strings.Join(out, "\n")
+}
+
 // issueExistsForModelLabel returns true if any existing issue file under runsDir/issues
 // matches the same Model + QueryLabel pair (ignoring scenario ratio/label).
 func issueExistsForModelLabel(runsDir, model, queryLabel string) bool {
@@ -176,7 +209,7 @@ func issueExistsForModelLabel(runsDir, model, queryLabel string) bool {
 	return false
 }
 
-func writeIssueFiles(runsDir string, dbCfg itypes.DBConfig, label string, rep reportJSON) error {
+func writeIssueFiles(runsDir string, dbCfg itypes.DBConfig, label string, rep reportJSON, statsMeta string) error {
 	ts := time.Now().Format("20060102_150405")
 	outDir := filepath.Join(runsDir, "issues", ts)
 	if err := os.MkdirAll(outDir, 0755); err != nil {
@@ -209,6 +242,16 @@ func writeIssueFiles(runsDir string, dbCfg itypes.DBConfig, label string, rep re
 			fmt.Fprintf(body, "   -- plan replayer file not available\n")
 		}
 		fmt.Fprintf(body, "   %s\n\n", r.Query)
+		fmt.Fprintf(body, "   show stats_meta;\n")
+		if statsMeta != "" {
+			fmt.Fprintf(body, "   ```\n")
+			for _, line := range strings.Split(statsMeta, "\n") {
+				fmt.Fprintf(body, "   %s\n", line)
+			}
+			fmt.Fprintf(body, "   ```\n\n")
+		} else {
+			fmt.Fprintf(body, "   -- show stats_meta output not found in run logs\n\n")
+		}
 		fmt.Fprintf(body, "2. What did you expect to see? (Required)\n")
 		fmt.Fprintf(body, "   Est Error Ratio<10 and Est Error Value<1000\n\n")
 		fmt.Fprintf(body, "3. What did you see instead (Required)\n")
@@ -372,14 +415,14 @@ func applyRuleChangesYAML(repoRoot string, doc RuleDoc) error {
 			if err := ensureIntIncludeHoleRule(repoRoot, label, margin); err != nil {
 				return err
 			}
-	case "datetime_include_hole", "holes_datetime_include":
-		label := r.Label
-		if label == "" {
-			label = "datetime include hole"
-		}
-		if err := ensureDatetimeIncludeHoleRule(repoRoot, label); err != nil {
-			return err
-		}
+		case "datetime_include_hole", "holes_datetime_include":
+			label := r.Label
+			if label == "" {
+				label = "datetime include hole"
+			}
+			if err := ensureDatetimeIncludeHoleRule(repoRoot, label); err != nil {
+				return err
+			}
 		case "lots_of_in":
 			// already implemented in generator; nothing to inject
 			fmt.Println("[Rules] lots_of_in recognized (already supported)")
@@ -524,12 +567,12 @@ func detectAndApplyRules(repoRoot, rulesPath, statePath string, logNoChange bool
 		mtime = info.ModTime().Format(time.RFC3339)
 	}
 	fmt.Printf("[Rules] %s (abs=%s) mtime=%s sha1=%s, labels=%v\n", rulesPath, absRules, mtime, sha, curLabels)
-    if sha == prev.FileSHA1 {
-        if logNoChange {
-            fmt.Println("[Rules] No change detected (sha1 unchanged).")
-        }
-        return false, nil
-    }
+	if sha == prev.FileSHA1 {
+		if logNoChange {
+			fmt.Println("[Rules] No change detected (sha1 unchanged).")
+		}
+		return false, nil
+	}
 	// diff labels for logging
 	old := map[string]struct{}{}
 	for _, l := range prev.Labels {
@@ -550,28 +593,28 @@ func detectAndApplyRules(repoRoot, rulesPath, statePath string, logNoChange bool
 	if err := applyRuleChanges(repoRoot, curLabels); err != nil {
 		fmt.Println("[Rules] apply label-based changes error:", err)
 	}
-    // parse fenced YAML blocks for structured rules (subset parser without external deps)
-    yamlDocs := []RuleDoc{}
-    blocks := extractYAMLBlocks(string(content))
-    for _, blk := range blocks {
-        if d, err := parseRulesYAMLSubset(blk); err == nil && len(d.Rules) > 0 {
-            yamlDocs = append(yamlDocs, d)
-        } else if err != nil {
-            fmt.Println("[Rules] YAML parse warning:", err)
-        }
-    }
-    for _, d := range yamlDocs {
-        if err := applyRuleChangesYAML(repoRoot, d); err != nil {
-            fmt.Println("[Rules] apply YAML changes error:", err)
-        }
-    }
+	// parse fenced YAML blocks for structured rules (subset parser without external deps)
+	yamlDocs := []RuleDoc{}
+	blocks := extractYAMLBlocks(string(content))
+	for _, blk := range blocks {
+		if d, err := parseRulesYAMLSubset(blk); err == nil && len(d.Rules) > 0 {
+			yamlDocs = append(yamlDocs, d)
+		} else if err != nil {
+			fmt.Println("[Rules] YAML parse warning:", err)
+		}
+	}
+	for _, d := range yamlDocs {
+		if err := applyRuleChangesYAML(repoRoot, d); err != nil {
+			fmt.Println("[Rules] apply YAML changes error:", err)
+		}
+	}
 	// persist new state
 	_ = os.MkdirAll(filepath.Dir(statePath), 0755)
 	_ = saveRulesState(statePath, rulesState{FileSHA1: sha, Labels: curLabels})
-    // hints (print once only when changed)
-    if strings.Contains(strings.ToLower(string(content)), "lots of in") {
-        fmt.Println("[Rules] Recognized directive: lots of IN (already enabled in generator)")
-    }
+	// hints (print once only when changed)
+	if strings.Contains(strings.ToLower(string(content)), "lots of in") {
+		fmt.Println("[Rules] Recognized directive: lots of IN (already enabled in generator)")
+	}
 	return true, nil
 }
 
@@ -614,94 +657,122 @@ func extractYAMLBlocks(md string) []string {
 //       margin: 10
 //       side: upper
 func parseRulesYAMLSubset(yamlText string) (RuleDoc, error) {
-    var doc RuleDoc
-    lines := strings.Split(yamlText, "\n")
-    inRules := false
-    var cur *RuleSpec
-    inParams := false
-    paramsIndent := 0
-    keyVal := func(s string) (string, string, bool) {
-        idx := strings.Index(s, ":")
-        if idx < 0 { return "", "", false }
-        k := strings.TrimSpace(s[:idx])
-        v := strings.TrimSpace(s[idx+1:])
-        return k, v, true
-    }
-    parseScalar := func(v string) interface{} {
-        v = strings.TrimSpace(v)
-        if v == "" { return "" }
-        if (strings.HasPrefix(v, "\"") && strings.HasSuffix(v, "\"")) || (strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'")) {
-            return strings.Trim(v, "\"'")
-        }
-        if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
-            inner := strings.TrimSpace(v[1:len(v)-1])
-            if inner == "" { return []string{} }
-            parts := strings.Split(inner, ",")
-            out := make([]string, 0, len(parts))
-            for _, p := range parts {
-                p = strings.TrimSpace(p)
-                p = strings.Trim(p, "\"'")
-                if p != "" { out = append(out, p) }
-            }
-            return out
-        }
-        var i int
-        if _, err := fmt.Sscanf(v, "%d", &i); err == nil {
-            return i
-        }
-        return v
-    }
-    indentOf := func(s string) int {
-        n := 0
-        for _, ch := range s {
-            if ch == ' ' { n++ } else { break }
-        }
-        return n
-    }
-    for _, raw := range lines {
-        line := raw
-        trim := strings.TrimSpace(line)
-        if trim == "" || strings.HasPrefix(trim, "#") { continue }
-        if !inRules {
-            if strings.HasPrefix(trim, "rules:") {
-                inRules = true
-            }
-            continue
-        }
-        if strings.HasPrefix(trim, "- ") {
-            if cur != nil { doc.Rules = append(doc.Rules, *cur) }
-            cur = &RuleSpec{Params: map[string]interface{}{}, AppliesTo: []string{}}
-            inParams = false
-            continue
-        }
-        if cur == nil { continue }
-        if strings.HasPrefix(trim, "params:") {
-            inParams = true
-            paramsIndent = indentOf(line)
-            continue
-        }
-        if inParams {
-            ind := indentOf(line)
-            if ind <= paramsIndent { inParams = false } else {
-                if k, v, ok := keyVal(strings.TrimSpace(line)); ok {
-                    cur.Params[k] = parseScalar(v)
-                    continue
-                }
-            }
-        }
-        if k, v, ok := keyVal(trim); ok {
-            switch strings.ToLower(k) {
-            case "label":
-                if s, ok2 := parseScalar(v).(string); ok2 { cur.Label = s }
-            case "type":
-                if s, ok2 := parseScalar(v).(string); ok2 { cur.Type = s }
-            case "applies_to":
-                if arr, ok2 := parseScalar(v).([]string); ok2 { cur.AppliesTo = arr }
-            }
-        }
-    }
-    if cur != nil { doc.Rules = append(doc.Rules, *cur) }
-    return doc, nil
+	var doc RuleDoc
+	lines := strings.Split(yamlText, "\n")
+	inRules := false
+	var cur *RuleSpec
+	inParams := false
+	paramsIndent := 0
+	keyVal := func(s string) (string, string, bool) {
+		idx := strings.Index(s, ":")
+		if idx < 0 {
+			return "", "", false
+		}
+		k := strings.TrimSpace(s[:idx])
+		v := strings.TrimSpace(s[idx+1:])
+		return k, v, true
+	}
+	parseScalar := func(v string) interface{} {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return ""
+		}
+		if (strings.HasPrefix(v, "\"") && strings.HasSuffix(v, "\"")) || (strings.HasPrefix(v, "'") && strings.HasSuffix(v, "'")) {
+			return strings.Trim(v, "\"'")
+		}
+		if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+			inner := strings.TrimSpace(v[1 : len(v)-1])
+			if inner == "" {
+				return []string{}
+			}
+			parts := strings.Split(inner, ",")
+			out := make([]string, 0, len(parts))
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				p = strings.Trim(p, "\"'")
+				if p != "" {
+					out = append(out, p)
+				}
+			}
+			return out
+		}
+		var i int
+		if _, err := fmt.Sscanf(v, "%d", &i); err == nil {
+			return i
+		}
+		return v
+	}
+	indentOf := func(s string) int {
+		n := 0
+		for _, ch := range s {
+			if ch == ' ' {
+				n++
+			} else {
+				break
+			}
+		}
+		return n
+	}
+	for _, raw := range lines {
+		line := raw
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.HasPrefix(trim, "#") {
+			continue
+		}
+		if !inRules {
+			if strings.HasPrefix(trim, "rules:") {
+				inRules = true
+			}
+			continue
+		}
+		if strings.HasPrefix(trim, "- ") {
+			if cur != nil {
+				doc.Rules = append(doc.Rules, *cur)
+			}
+			cur = &RuleSpec{Params: map[string]interface{}{}, AppliesTo: []string{}}
+			inParams = false
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		if strings.HasPrefix(trim, "params:") {
+			inParams = true
+			paramsIndent = indentOf(line)
+			continue
+		}
+		if inParams {
+			ind := indentOf(line)
+			if ind <= paramsIndent {
+				inParams = false
+			} else {
+				if k, v, ok := keyVal(strings.TrimSpace(line)); ok {
+					cur.Params[k] = parseScalar(v)
+					continue
+				}
+			}
+		}
+		if k, v, ok := keyVal(trim); ok {
+			switch strings.ToLower(k) {
+			case "label":
+				if s, ok2 := parseScalar(v).(string); ok2 {
+					cur.Label = s
+				}
+			case "type":
+				if s, ok2 := parseScalar(v).(string); ok2 {
+					cur.Type = s
+				}
+			case "applies_to":
+				if arr, ok2 := parseScalar(v).([]string); ok2 {
+					cur.AppliesTo = arr
+				}
+			}
+		}
+	}
+	if cur != nil {
+		doc.Rules = append(doc.Rules, *cur)
+	}
+	return doc, nil
 }
 
 func main() {
@@ -752,7 +823,9 @@ func main() {
 				fmt.Printf("[Issue] parse %s error: %v\n", path, err)
 				continue
 			}
-			if err := writeIssueFiles(*runsOut, dbc, lab, rep); err != nil {
+			logPath := filepath.Join(*runsOut, fmt.Sprintf("scenario_%s.log", lab))
+			statsMeta := extractStatsMetaFromLog(logPath)
+			if err := writeIssueFiles(*runsOut, dbc, lab, rep, statsMeta); err != nil {
 				fmt.Printf("[Issue] write issues for %s error: %v\n", lab, err)
 			}
 		}
