@@ -165,7 +165,7 @@ go build -o cmd/automation/auto-run ./cmd/automation
 cmd/automation/auto-run \
   --config config.json \
   --db-config db_config.json \
-  --ratios 0.2,0.5,0.8 \
+  --ratios 0,0.2 \
   --tool-output-dir output \
   --out runs
 ```
