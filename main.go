@@ -150,7 +150,8 @@ func main() {
 					log.Printf("Error saving CSV for %s: %v", name, err)
 					continue
 				}
-				dbManager.CreateTable(name, df)
+				partClause := df.PartitionClause()
+				dbManager.CreateTable(name, df, partClause)
 				dbManager.LoadDataInfile(name, csvPath)
 			}
 		}
@@ -202,6 +203,10 @@ func main() {
 				df, err := loadDataFrameFromCSV(baseCSV)
 				if err != nil {
 					log.Printf("Error loading CSV for %s: %v", name, err)
+					continue
+				}
+				if !dbManager.TableExists(name) {
+					log.Printf("Table %s not found. Please run --gen-base first to create base data.", name)
 					continue
 				}
 				// Map model to generic map for internal/data modifier
@@ -436,6 +441,45 @@ func contains(list string, item string) bool {
 func saveDataFrameToCSV(df *datapkg.DataFrame, path string) error { return df.SaveCSV(path) }
 func loadDataFrameFromCSV(path string) (*datapkg.DataFrame, error) {
 	return datapkg.LoadDataFrameFromCSV(path)
+}
+
+// derivePartitionClause builds partition clause for known partitioned models.
+func derivePartitionClause(m ModelConfig) string {
+	if strings.ToLower(m.Type) != "partition_skew" {
+		return ""
+	}
+	// Reuse generator logic: build month starts from date_range (fallback to 6 months).
+	start, end := "", ""
+	if dr, ok := m.Params["date_range"].([]interface{}); ok {
+		if len(dr) > 0 {
+			start = fmt.Sprintf("%v", dr[0])
+		}
+		if len(dr) > 1 {
+			end = fmt.Sprintf("%v", dr[1])
+		}
+	}
+	startTime, _ := time.Parse("2006-01-02", start)
+	if startTime.IsZero() {
+		now := time.Now()
+		startTime = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	endTime, _ := time.Parse("2006-01-02", end)
+	if endTime.IsZero() {
+		endTime = startTime.AddDate(0, 6, 0)
+	}
+	startTime = time.Date(startTime.Year(), startTime.Month(), 1, 0, 0, 0, 0, time.UTC)
+	endTime = time.Date(endTime.Year(), endTime.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if !endTime.After(startTime) {
+		endTime = startTime.AddDate(0, 1, 0)
+	}
+	monthStarts := []time.Time{}
+	for cur := startTime; cur.Before(endTime) || cur.Equal(endTime); cur = cur.AddDate(0, 1, 0) {
+		monthStarts = append(monthStarts, cur)
+		if cur.Year() == endTime.Year() && cur.Month() == endTime.Month() {
+			break
+		}
+	}
+	return datapkg.BuildMonthlyPartitionClause(monthStarts, "partition_skew_datetime")
 }
 
 // [已删除] 旧的生成报告辅助函数 (generateCSVReport, generateHTMLReport 等)，因为现在使用 reporter.go
