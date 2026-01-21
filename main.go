@@ -156,6 +156,7 @@ func main() {
 		}
 
 		// Analyze tables after creation
+		time.Sleep(1 * time.Minute)
 		for _, model := range config.Models {
 			if !contains(EXTERNAL_MODELS, model.Type) {
 				// Internal tables in default DB
@@ -252,7 +253,7 @@ func main() {
 		// Allow TiDB stats to refresh before generating/executing queries
 		if genQuery || execQuery {
 			fmt.Println("Waiting 1 minutes for TiDB stats to refresh...")
-			time.Sleep(1 * time.Minute)
+			time.Sleep(2 * time.Minute)
 		}
 		// Print STATS_META for default DB to correlate key-level modify_count with line-level changes
 		dbManager.DumpStatsMetaForDB(dbConfig.DBName)
