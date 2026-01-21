@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	INTERNAL_MODELS     = "skew,holes,low_card"
+	INTERNAL_MODELS     = "skew,holes,low_card,partition_skew"
 	EXTERNAL_MODELS     = "external_tpcc,external_tpch"
-	TARGET_QUERY_MODELS = "skew,holes,low_card"
+	TARGET_QUERY_MODELS = "skew,holes,low_card,partition_skew"
 	CONTROL_KEYS        = "insert_rows,update_ratio,delete_ratio"
 )
 
@@ -263,10 +263,18 @@ func main() {
 	if genQuery {
 		fmt.Println("\n=== [Step 3] Generate Queries (Adaptive) ===")
 		dbManager.InitDB(false)
+		types := make([]string, 0, len(config.Models))
+		for _, model := range config.Models {
+			types = append(types, model.Type)
+		}
+		fmt.Printf("Loaded model types: %s\n", strings.Join(types, ", "))
 		for _, model := range config.Models {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
+				if strings.EqualFold(model.Type, "partition_skew") {
+					cols = []string{"partition_skew_id", "partition_skew_datetime"}
+				}
 				stats := dbManager.GetTableStats(name, cols)
 
 				outfile := filepath.Join(queriesDir, fmt.Sprintf("queries_%s.sql", name))
