@@ -279,12 +279,17 @@ func main() {
 	if genQuery {
 		fmt.Println("\n=== [Step 3] Generate Queries (Adaptive) ===")
 		dbManager.InitDB(false)
+		types := make([]string, 0, len(config.Models))
+		for _, model := range config.Models {
+			types = append(types, model.Type)
+		}
+		fmt.Printf("Loaded model types: %s\n", strings.Join(types, ", "))
 		for _, model := range config.Models {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
 				if strings.EqualFold(model.Type, "partition_skew") {
-					cols = []string{"partition_skew_id", "partition_skew_datetime"}
+					cols = []string{"PartitionSkew_int", "PartitionSkew_datetime"}
 				}
 				stats := dbManager.GetTableStats(name, cols)
 
