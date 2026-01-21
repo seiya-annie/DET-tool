@@ -149,65 +149,25 @@ cmd/scenarios/run-scenarios \
 
 提示：`--tool-output-dir` 用于指定 det-tool 的输出基础目录（默认 `output`）；场景工具会从该目录下的 `reports/` 收集最新报告。
 
-### 自动化（规则驱动，一键构建+执行）
+### 规则自动更新（Python）
 
-automation 会在运行前自动检测 `SQLGEN_RULES.md` 是否有变更（支持标签与 YAML 结构化 DSL），若有变更则注入生成规则代码，随后构建 `det-tool` 与 `run-scenarios` 并执行全流程，最后在 `runs/issues/` 生成 Bad Cases 的 Issue 模板。
+规则文件使用纯自然语言，默认路径为仓库根目录下的 `rule_description.txt`。脚本会检测新增规则，调用 OpenAI API 生成 Go 代码 diff，自动应用、构建并运行场景测试。
 
-1) 构建 automation（推荐入口）
-
-```bash
-go build -o cmd/automation/auto-run ./cmd/automation
-```
-
-2) 一次性运行（总是执行：检测规则 → 注入（如有）→ 构建 → 运行场景 → 生成 issues）
+执行方式：
 
 ```bash
-cmd/automation/auto-run \
-  --config config.json \
-  --db-config db_config.json \
-  --ratios 0.2,0.5,0.8 \
-  --tool-output-dir output \
-  --out runs
+OPENAI_API_KEY=... \
+./scripts/rules_autoupdate.py \
+  --scenarios-args "--config config.json --db-config db_config.json --out runs --tool-output-dir output"
 ```
 
-3) 监听模式（仅在 `SQLGEN_RULES.md` 变更时触发执行）
+常用参数：
+- `--dry-run`：仅输出 diff，不应用
+- `--skip-tests`：跳过构建与场景测试
+- `--model`：指定模型（默认 `gpt-4o-mini`）
+- `--api-base`：自定义 OpenAI API Base URL
 
-```bash
-cmd/automation/auto-run \
-  --watch --watch-interval 60 \
-  --config config.json \
-  --db-config db_config.json \
-  --ratios 0.2,0.5,0.8 \
-  --tool-output-dir output \
-  --out runs
-```
-
-说明：
-- automation 内部会自行构建 `det-tool` 与 `cmd/scenarios/run-scenarios`，无需手动构建二者。
-- 规则文件状态保存在 `.automation/rules_state.json`；若需强制重新应用规则（忽略缓存），可删除该文件后再次运行。
-- 结构化规则 DSL 详见 `SQLGEN_RULES.md`，支持如 `int include hole`、`datetime include hole` 等注入类型；常见基础规则和 `lots of IN` 已内置，无需注入。
-
-### automation vs run-scenarios 的区别
-
-- 定位
-  - `automation`: 规则驱动的编排器。检测/应用 `SQLGEN_RULES.md` → 自动构建 → 调用 `run-scenarios` → 生成报告与 GitHub issue 模板。
-  - `run-scenarios`: 多场景批跑器。按指定 `--ratios` 多次调用 `det-tool`，并生成汇总（`summary.html`、`queries_by_ratio.csv`、`queries_pivot.csv`）。
-
-- 规则支持
-  - `automation`: 支持标签和 YAML DSL（注入型示例：`int include hole`、`datetime include hole`）。
-  - `run-scenarios`: 不处理规则文件，直接基于当前源码与配置执行。
-
-- 构建
-  - `automation`: 自行构建 `det-tool` 与 `run-scenarios`。
-  - `run-scenarios`: 运行时会构建 `det-tool`。
-
-- 产物
-  - `automation`: 调用 `run-scenarios` 的产物 + 额外生成 `runs/issues/<timestamp>/*.md`（Bad Case Issue 模板，按 Model+QueryLabel 去重）。
-  - `run-scenarios`: `runs/report_*.{html,csv,json}`、`runs/summary.html`、`runs/queries_by_ratio.csv` 等。
-
-- 运行模式
-  - `automation`: 一次性模式与监听模式（`--watch`）。
-  - `run-scenarios`: 一次性多场景执行。
+状态文件：`.rules_state.json`（记录已处理规则的 hash）
 
 ### 命令行参数
 
