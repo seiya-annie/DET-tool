@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	INTERNAL_MODELS     = "skew,holes,low_card"
+	INTERNAL_MODELS     = "skew,holes,low_card,partition_skew"
 	EXTERNAL_MODELS     = "external_tpcc,external_tpch"
-	TARGET_QUERY_MODELS = "skew,holes,low_card"
+	TARGET_QUERY_MODELS = "skew,holes,low_card,partition_skew"
 	CONTROL_KEYS        = "insert_rows,update_ratio,delete_ratio"
 )
 
@@ -150,7 +150,8 @@ func main() {
 					log.Printf("Error saving CSV for %s: %v", name, err)
 					continue
 				}
-				dbManager.CreateTable(name, df)
+				partClause := df.PartitionClause()
+				dbManager.CreateTable(name, df, partClause)
 				dbManager.LoadDataInfile(name, csvPath)
 			}
 		}
@@ -174,6 +175,8 @@ func main() {
 				dbManager.AnalyzeAllTablesInDB(targetDB)
 			}
 		}
+		// Snapshot STATS_META after all ANALYZE
+		dbManager.DumpStatsMetaForDB(dbConfig.DBName)
 	}
 
 	// Step 2: Incremental Data Generation & Execution
@@ -205,10 +208,14 @@ func main() {
 					log.Printf("Error loading CSV for %s: %v", name, err)
 					continue
 				}
+				if !dbManager.TableExists(name) {
+					log.Printf("Table %s not found. Please run --gen-base first to create base data.", name)
+					continue
+				}
 				// Map model to generic map for internal/data modifier
 				m := map[string]interface{}{"Name": model.Name, "Type": model.Type, "Params": model.Params, "Incremental": model.Incremental}
 				// Apply with internal/data modifier and logger
-				df, stats := dataModifier2.Apply(df, m, name, logger)
+				df1, stats := dataModifier2.Apply(df, m, name, logger)
 				// record actual modify ratio for report if enabled later
 				if stats.BaseRows > 0 {
 					ratio := float64(stats.Inserted)/float64(stats.BaseRows) + float64(stats.Updated)/float64(stats.BaseRows) + float64(stats.Deleted)/float64(stats.BaseRows)
@@ -216,7 +223,7 @@ func main() {
 				}
 				// record raw line-level stats for Step2 summary logging
 				appliedStats[name] = incStats{Inserted: stats.Inserted, Updated: stats.Updated, Deleted: stats.Deleted, BaseRows: stats.BaseRows}
-				if err := saveDataFrameToCSV(df, baseCSV); err != nil {
+				if err := saveDataFrameToCSV(df1, baseCSV); err != nil {
 					log.Printf("Error saving modified CSV for %s: %v", name, err)
 				}
 			}
@@ -224,8 +231,17 @@ func main() {
 
 		sqlGenerator.Save(sqlFile)
 		if _, err := os.Stat(sqlFile); err == nil {
-			fmt.Printf("Executing incremental DMLs from %s...\n", sqlFile)
-			dbManager.ExecuteSQLFile(sqlFile)
+			if info, err := os.Stat(sqlFile); err == nil {
+				fmt.Printf("Executing incremental DMLs from %s (size=%d bytes)...\n", sqlFile, info.Size())
+				if info.Size() == 0 {
+					fmt.Println("    [DB] File is empty, skip executing incremental DMLs.")
+				} else {
+					dbManager.ExecuteSQLFile(sqlFile)
+				}
+			} else {
+				fmt.Printf("Executing incremental DMLs from %s...\n", sqlFile)
+				dbManager.ExecuteSQLFile(sqlFile)
+			}
 		}
 
 		// Pass 2: run external workloads (tpcc/tpch)
@@ -263,10 +279,18 @@ func main() {
 	if genQuery {
 		fmt.Println("\n=== [Step 3] Generate Queries (Adaptive) ===")
 		dbManager.InitDB(false)
+		types := make([]string, 0, len(config.Models))
+		for _, model := range config.Models {
+			types = append(types, model.Type)
+		}
+		fmt.Printf("Loaded model types: %s\n", strings.Join(types, ", "))
 		for _, model := range config.Models {
 			if contains(TARGET_QUERY_MODELS, model.Type) {
 				name := model.Name
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
+				if strings.EqualFold(model.Type, "partition_skew") {
+					cols = []string{"PartitionSkew_int", "PartitionSkew_datetime"}
+				}
 				stats := dbManager.GetTableStats(name, cols)
 
 				outfile := filepath.Join(queriesDir, fmt.Sprintf("queries_%s.sql", name))
@@ -437,6 +461,45 @@ func contains(list string, item string) bool {
 func saveDataFrameToCSV(df *datapkg.DataFrame, path string) error { return df.SaveCSV(path) }
 func loadDataFrameFromCSV(path string) (*datapkg.DataFrame, error) {
 	return datapkg.LoadDataFrameFromCSV(path)
+}
+
+// derivePartitionClause builds partition clause for known partitioned models.
+func derivePartitionClause(m ModelConfig) string {
+	if strings.ToLower(m.Type) != "partition_skew" {
+		return ""
+	}
+	// Reuse generator logic: build month starts from date_range (fallback to 6 months).
+	start, end := "", ""
+	if dr, ok := m.Params["date_range"].([]interface{}); ok {
+		if len(dr) > 0 {
+			start = fmt.Sprintf("%v", dr[0])
+		}
+		if len(dr) > 1 {
+			end = fmt.Sprintf("%v", dr[1])
+		}
+	}
+	startTime, _ := time.Parse("2006-01-02", start)
+	if startTime.IsZero() {
+		now := time.Now()
+		startTime = time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	endTime, _ := time.Parse("2006-01-02", end)
+	if endTime.IsZero() {
+		endTime = startTime.AddDate(0, 6, 0)
+	}
+	startTime = time.Date(startTime.Year(), startTime.Month(), 1, 0, 0, 0, 0, time.UTC)
+	endTime = time.Date(endTime.Year(), endTime.Month(), 1, 0, 0, 0, 0, time.UTC)
+	if !endTime.After(startTime) {
+		endTime = startTime.AddDate(0, 1, 0)
+	}
+	monthStarts := []time.Time{}
+	for cur := startTime; cur.Before(endTime) || cur.Equal(endTime); cur = cur.AddDate(0, 1, 0) {
+		monthStarts = append(monthStarts, cur)
+		if cur.Year() == endTime.Year() && cur.Month() == endTime.Month() {
+			break
+		}
+	}
+	return datapkg.BuildMonthlyPartitionClause(monthStarts, "partition_skew_datetime")
 }
 
 // [已删除] 旧的生成报告辅助函数 (generateCSVReport, generateHTMLReport 等)，因为现在使用 reporter.go

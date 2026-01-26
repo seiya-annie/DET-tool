@@ -80,8 +80,7 @@
         "insert_rows": 8451,
         "month_weights": [3, 2, 0.5],
         "update_ratio": 0.04225352112676057,
-        "varchar_range": {"prefix": "user_", "suffix_range": [120001, 140000]
-        }
+        "varchar_range": {"prefix": "user_", "suffix_range": [120001, 140000]}
       }
     },
     {
