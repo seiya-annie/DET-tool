@@ -69,46 +69,18 @@
       "description": "数据倾斜分区表：按月 RANGE 分区，最后一个分区最少",
       "type": "partition_skew",
       "params": {
-        "date_range": [
-          "2024-01-01",
-          "2024-06-01"
-        ],
-        "month_weights": [
-          6,
-          5,
-          4,
-          3,
-          2,
-          1
-        ],
+        "date_range": ["2024-10-01", "2025-03-01"],
+        "month_weights": [6, 5, 4, 3, 2, 1],
         "rows": 60000,
-        "varchar_range": {
-          "prefix": "user_",
-          "suffix_range": [
-            1,
-            120000
-          ]
-        }
+        "varchar_range": {"prefix": "user_", "suffix_range": [1, 120000]}
       },
       "incremental": {
-        "date_range": [
-          "2024-06-01",
-          "2024-08-01"
-        ],
+        "date_range": ["2025-04-01", "2025-06-01"],
         "delete_ratio": 0.016901408450704227,
         "insert_rows": 8451,
-        "month_weights": [
-          3,
-          2,
-          0.5
-        ],
+        "month_weights": [3, 2, 0.5],
         "update_ratio": 0.04225352112676057,
-        "varchar_range": {
-          "prefix": "user_",
-          "suffix_range": [
-            120001,
-            140000
-          ]
+        "varchar_range": {"prefix": "user_", "suffix_range": [120001, 140000]
         }
       }
     },

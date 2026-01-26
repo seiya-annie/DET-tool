@@ -319,6 +319,24 @@ func loadExistingIssueKeys(dir string) map[string]bool {
 	return keys
 }
 
+func loadIssueTemplate(dir, model, qlabel string) (string, string) {
+	fileName := fmt.Sprintf("issue_%s.md", sanitizeFileName(model+"_"+qlabel))
+	path := filepath.Join(dir, fileName)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	body := string(b)
+	title := ""
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "Title:") {
+			title = strings.TrimSpace(strings.TrimPrefix(line, "Title:"))
+			break
+		}
+	}
+	return body, title
+}
+
 func extractStatsMeta(logPath string) string {
 	b, err := os.ReadFile(logPath)
 	if err != nil {
@@ -406,7 +424,7 @@ func generateIssueTemplates(outPath string, cases []IssueCase, statsMetaByLabel 
 			"```",
 			"",
 			"```",
-			"plan replayer load '" + plan + "' -- 本case 对应生成的planreplayer 文件",
+			"plan replayer load '" + plan + "' -- planreplayer file",
 			"```",
 			"",
 			"```sql",
@@ -522,6 +540,8 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
 		model       string
 		qlabel      string
 		sql         string
+		issueBody   string
+		issueTitle  string
 		by          map[string]metrics
 		anyBad      bool
 		maxBadRatio float64
@@ -529,6 +549,8 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
 		maxErrValue float64
 		maxErrLabel string
 	}
+	issuesDir := filepath.Join(outPath, "issues")
+	issueCache := make(map[string][2]string)
 	pivot := make(map[string]*pivotRow)
 	for _, r := range allRows {
 		// Group by Model + Query Label; if Query Label is empty (e.g., external tpcc),
@@ -540,7 +562,22 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
 		key := r.Model + "|" + glabel
 		pr, ok := pivot[key]
 		if !ok {
-			pr = &pivotRow{model: r.Model, qlabel: glabel, sql: r.QuerySQL, by: make(map[string]metrics)}
+			var issueBody, issueTitle string
+			cacheKey := r.Model + "|" + glabel
+			if v, ok := issueCache[cacheKey]; ok {
+				issueBody, issueTitle = v[0], v[1]
+			} else {
+				issueBody, issueTitle = loadIssueTemplate(issuesDir, r.Model, glabel)
+				issueCache[cacheKey] = [2]string{issueBody, issueTitle}
+			}
+			pr = &pivotRow{
+				model:      r.Model,
+				qlabel:     glabel,
+				sql:        r.QuerySQL,
+				issueBody:  issueBody,
+				issueTitle: issueTitle,
+				by:         make(map[string]metrics),
+			}
 			pivot[key] = pr
 		}
 		// If multiple SQLs share same label, keep the first seen as a sample
@@ -610,13 +647,15 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
 			"<option value=\"no\">Not Bug</option>" +
 			"</select></td>")
 		pivotSB.WriteString(fmt.Sprintf("<td><button class=\"issue-btn\" onclick=\"createIssue(this)\" disabled "+
-			"data-model=\"%s\" data-qlabel=\"%s\" data-sql=\"%s\" data-err-ratio=\"%.2f\" data-err-value=\"%.2f\" data-ratio-label=\"%s\">Create Issue</button></td>",
+			"data-model=\"%s\" data-qlabel=\"%s\" data-sql=\"%s\" data-err-ratio=\"%.2f\" data-err-value=\"%.2f\" data-ratio-label=\"%s\" data-issue-body=\"%s\" data-issue-title=\"%s\">Create Issue</button></td>",
 			escapeHTML(pr.model),
 			escapeHTML(pr.qlabel),
 			escapeHTML(pr.sql),
 			pr.maxErrRatio,
 			pr.maxErrValue,
 			escapeHTML(pr.maxErrLabel),
+			escapeHTML(pr.issueBody),
+			escapeHTML(pr.issueTitle),
 		))
 		for i, lab := range labelsOrder {
 			bg := colors[i%len(colors)]
@@ -722,6 +761,12 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
       }
       return out;
     }
+    function htmlDecode(s) {
+      if (!s) { return ''; }
+      var t = document.createElement('textarea');
+      t.innerHTML = s;
+      return t.value;
+    }
     function buildIssueData(btn) {
       var model = btn.getAttribute('data-model') || '';
       var qlabel = btn.getAttribute('data-qlabel') || '';
@@ -729,6 +774,8 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
       var ratio = btn.getAttribute('data-err-ratio') || '';
       var value = btn.getAttribute('data-err-value') || '';
       var label = btn.getAttribute('data-ratio-label') || '';
+      var issueBodyTpl = htmlDecode(btn.getAttribute('data-issue-body') || '');
+      var issueTitleTpl = htmlDecode(btn.getAttribute('data-issue-title') || '');
       var titleLabel = qlabel;
       if (titleLabel.length > 80) { titleLabel = titleLabel.slice(0, 77) + '...'; }
       var title = 'det-tool issue';
@@ -740,6 +787,7 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
         title = titleLabel;
       }
       if (label) { title += '-' + label + '%'; }
+      if (issueTitleTpl) { title = issueTitleTpl; }
       var ratioLabel = label ? (label + '%') : 'n/a';
       var fence = String.fromCharCode(96) + String.fromCharCode(96) + String.fromCharCode(96);
       var fenceSql = fence + 'sql';
@@ -759,6 +807,7 @@ func writeHTMLSummary(outPath string, labelsOrder []string, allRows []QueryRow) 
         '### Notes',
         '- Marked as bug in summary.html'
       ].join('\n');
+      if (issueBodyTpl) { body = issueBodyTpl; }
       return { title: title, body: body };
     }
     function openPrefilledIssue(repo, title, body, labels) {

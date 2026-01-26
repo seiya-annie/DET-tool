@@ -136,6 +136,10 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, dtEq))
 	dtRangeEnd := dtMin.AddDate(0, 0, 30).Format("2006-01-02")
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s' AND '%s'", tableName, tableName, colDt, dateMin, dtRangeEnd))
+	// Cross-year query based on base date range year
+	acrossYearStart := time.Date(dtMin.Year(), time.December, 31, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+	acrossYearEnd := time.Date(dtMin.Year()+1, time.January, 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime across year */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s' AND '%s'", tableName, tableName, colDt, acrossYearStart, acrossYearEnd))
 	// Use base init min/max for histogram-boundary queries
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime last value in last histogram */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, baseDateMax))
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime first value in first histogram */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, baseDateMin))
@@ -158,6 +162,9 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 				crossStart := dhStart.Add(-offset).Format("2006-01-02")
 				crossEnd := dhStart.Add(offset).Format("2006-01-02")
 				sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime across hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'", tableName, tableName, colDt, crossStart, colDt, crossEnd))
+				left := dhStart.AddDate(0, 0, -1).Format("2006-01-02")
+				right := dhEnd.AddDate(0, 0, 1).Format("2006-01-02")
+				sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime include hole */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s < '%s' OR %s > '%s'", tableName, tableName, colDt, left, colDt, right))
 			}
 		}
 	}
