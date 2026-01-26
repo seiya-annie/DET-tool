@@ -289,7 +289,7 @@ func main() {
 				name := model.Name
 				cols := []string{fmt.Sprintf("%s_int", name), fmt.Sprintf("%s_datetime", name)}
 				if strings.EqualFold(model.Type, "partition_skew") {
-					cols = []string{"PartitionSkew_int", "PartitionSkew_datetime"}
+					cols = []string{"partition_skew_id", "partition_skew_datetime"}
 				}
 				stats := dbManager.GetTableStats(name, cols)
 
