@@ -1174,15 +1174,15 @@ func main() {
 			fmt.Printf("[Runner] Wrote pivot report: %s\n", pivotCSV)
 		}
 
+		if len(issueCases) > 0 {
+			generateIssueTemplates(outPath, issueCases, statsMetaByLabel, tidbVersion)
+		}
+
 		// Write HTML summary including links + simplified + pivot
 		if err := writeHTMLSummary(outPath, labelsOrder, allRows); err == nil {
 			fmt.Printf("[Runner] Wrote HTML summary: %s\n", filepath.Join(outPath, "summary.html"))
 		} else {
 			fmt.Println("[Runner] Failed to write HTML summary:", err)
 		}
-	}
-
-	if len(issueCases) > 0 {
-		generateIssueTemplates(outPath, issueCases, statsMetaByLabel, tidbVersion)
 	}
 }

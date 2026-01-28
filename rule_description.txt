@@ -1,2 +1,7 @@
 [已实现]为holes 模型的datetime 类型增加一个include hole 的查询，label 为： datetime include hole.类似于int 类型的  int include hole
+
 [已实现]为所有基本模型的时间类型增加一个跨年的查询，label 为： datetime across year.
+
+[已实现]目前针对out of bound 场景生成的query都是point get, 请为int 和 datetime 数据类型的每一个out of bound 场景增加一个range scan的query。例如针对/* LABEL: int out of bound */ SELECT /*+ IGNORE_INDEX(Holes PRIMARY) */ 1 FROM Holes WHERE Holes_int = 127665; 场景
+增加一个/* LABEL: int range out of bound */ SELECT /*+ IGNORE_INDEX(Holes PRIMARY) */ 1 FROM Holes WHERE Holes_int > 127665 and Holes_int < 137665; 的query
+

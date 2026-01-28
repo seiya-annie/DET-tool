@@ -62,7 +62,10 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 		baseMinInt = int(getFloatValue(map[string]interface{}{"val": intRange[0]}, "val"))
 		baseMaxInt = int(getFloatValue(map[string]interface{}{"val": intRange[1]}, "val"))
 	}
-	sqls = append(sqls, fmt.Sprintf("/* LABEL: int out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, maxInt+1000))
+	intOutStart := maxInt + 1000
+	intOutEnd := maxInt + 10000
+	sqls = append(sqls, fmt.Sprintf("/* LABEL: int out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, intOutStart))
+	sqls = append(sqls, fmt.Sprintf("/* LABEL: int range out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > %d AND %s < %d", tableName, tableName, colInt, intOutStart, colInt, intOutEnd))
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: int point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = %d", tableName, tableName, colInt, minInt+1))
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: int range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN %d AND %d", tableName, tableName, colInt, minInt, minInt+50))
 	// Use base min/max for histogram-boundary queries
@@ -105,7 +108,8 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 			suffixEnd = 1000
 		}
 	}
-	sqls = append(sqls, fmt.Sprintf("/* LABEL: string out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'", tableName, tableName, colStr, prefix, suffixEnd+1000))
+	strOutStart := suffixEnd + 1000
+	sqls = append(sqls, fmt.Sprintf("/* LABEL: string out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'", tableName, tableName, colStr, prefix, strOutStart))
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: string point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'", tableName, tableName, colStr, prefix, suffixStart+1))
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: string range scan */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s BETWEEN '%s%d' AND '%s%d'", tableName, tableName, colStr, prefix, suffixStart, prefix, suffixStart+50))
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: string last value in last histogram */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s%d'", tableName, tableName, colStr, prefix, suffixEnd))
@@ -131,14 +135,19 @@ func (qb *QueryBuilder) Generate(modelConfig itypes.ModelConfig, tableName strin
 		dateMax = baseDateMax
 	}
 	// Guard: ensure dateMax is a valid date; otherwise fall back to baseDateMax
-	if _, err := time.Parse("2006-01-02", strings.TrimSpace(dateMax)); err != nil {
+	dateMax = strings.TrimSpace(dateMax)
+	dateMaxTime, err := time.Parse("2006-01-02", dateMax)
+	if err != nil {
 		dateMax = baseDateMax
+		dateMaxTime, _ = time.Parse("2006-01-02", baseDateMax)
 	}
 	dtMin, err := time.Parse("2006-01-02", dateMin)
 	if err != nil {
 		dtMin = time.Now().AddDate(-1, 0, 0)
 	}
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s'", tableName, tableName, colDt, dateMax))
+	dateOutEnd := dateMaxTime.AddDate(0, 0, 30).Format("2006-01-02")
+	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime range out of bound */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s > '%s' AND %s < '%s'", tableName, tableName, colDt, dateMax, colDt, dateOutEnd))
 	dtEq := dtMin.AddDate(0, 0, 1).Format("2006-01-02")
 	sqls = append(sqls, fmt.Sprintf("/* LABEL: datetime point lookup */ SELECT /*+ IGNORE_INDEX(%s PRIMARY) */ 1 FROM %s WHERE %s = '%s'", tableName, tableName, colDt, dtEq))
 	dtRangeEnd := dtMin.AddDate(0, 0, 30).Format("2006-01-02")
